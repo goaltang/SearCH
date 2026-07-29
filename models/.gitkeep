@@ -1,0 +1,2 @@
+# Placeholder to keep models/ directory in git.
+# Actual .onnx files are downloaded by download_models.py / download_models.ps1.
