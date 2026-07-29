@@ -47,26 +47,48 @@ class PhotoFinder:
                 self.models_dir / "w600k_r50.onnx")
         return self._engine
 
-    def extract_reference(self, ref_image) -> list[np.ndarray]:
-        """Embedding of the target person in the reference image.
-
-        Only the largest (most prominent) face is used: extra background
-        faces would pollute the search with unintended people.
-        """
+    @staticmethod
+    def _read_ref_image(ref_image):
+        """Return a cv2 image from a path or an already-loaded image."""
         if isinstance(ref_image, (str, Path)):
-            img = cv2.imdecode(np.fromfile(str(ref_image), dtype=np.uint8),
-                               cv2.IMREAD_COLOR)
+            return cv2.imdecode(np.fromfile(str(ref_image), dtype=np.uint8),
+                                cv2.IMREAD_COLOR)
+        return ref_image
+
+    def extract_reference(self, ref_images) -> list[np.ndarray]:
+        """Embeddings of the target person from one or more reference images.
+
+        Each image contributes only its largest (most prominent) face: extra
+        background faces would pollute the search with unintended people.
+        """
+        if ref_images is None:
+            logger.error("No reference image provided")
+            raise ValueError("no reference image provided")
+
+        # Accept a single image or a sequence of images.
+        if isinstance(ref_images, (str, Path)) or (
+                isinstance(ref_images, np.ndarray) and ref_images.ndim == 3):
+            items = [ref_images]
         else:
-            img = ref_image
-        if img is None:
-            logger.error("Cannot read reference image")
-            raise ValueError("cannot read reference image")
-        faces = self.engine.process(img)
-        if not faces:
-            logger.error("No face detected in the reference image")
-            raise ValueError("no face detected in the reference image")
-        logger.info("Reference image: %d face(s), using the largest one", len(faces))
-        return [faces[0]["embedding"]]
+            items = list(ref_images)
+
+        embeddings: list[np.ndarray] = []
+        for item in items:
+            img = self._read_ref_image(item)
+            if img is None:
+                logger.warning("Cannot read one of the reference images, skipping")
+                continue
+            faces = self.engine.process(img)
+            if not faces:
+                logger.warning("No face detected in one of the reference images, skipping")
+                continue
+            logger.info("Reference image: %d face(s), using the largest one", len(faces))
+            embeddings.append(faces[0]["embedding"])
+
+        if not embeddings:
+            logger.error("No valid reference face found in any reference image")
+            raise ValueError("no valid reference face found in any reference image")
+        return embeddings
 
     def run(self, url: str, ref_image, max_photos: int | None = None,
             threshold: float = DEFAULT_THRESHOLD, refresh: bool = False,

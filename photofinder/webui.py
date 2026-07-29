@@ -271,11 +271,11 @@ def _render_results(results, album_url: str) -> str:
             f"<div class='pf-grid'>" + "".join(cards) + "</div>")
 
 
-def run_search(url, ref_img, threshold, max_photos, pwd, progress=gr.Progress()):
+def run_search(url, ref_imgs, threshold, max_photos, pwd, progress=gr.Progress()):
     if not url or not url.strip():
         raise gr.Error("请输入活动相册链接")
-    if ref_img is None:
-        raise gr.Error("请上传参考人脸照片")
+    if not ref_imgs:
+        raise gr.Error("请上传至少一张参考人脸照片")
 
     max_n = int(max_photos) if max_photos and max_photos > 0 else None
 
@@ -285,10 +285,10 @@ def run_search(url, ref_img, threshold, max_photos, pwd, progress=gr.Progress())
         progress(frac, desc=f"{label} {done}/{total or '?'}")
 
     progress(0, desc="启动")
-    logger.info("WebUI search: url=%s", url.strip())
+    logger.info("WebUI search: url=%s refs=%d", url.strip(), len(ref_imgs))
     try:
         results = FINDER.run(
-            url.strip(), ref_img, max_photos=max_n,
+            url.strip(), ref_imgs, max_photos=max_n,
             threshold=float(threshold), pwd=pwd or None,
             progress_cb=cb)
     except ValueError as e:
@@ -316,8 +316,9 @@ def build_app() -> gr.Blocks:
                     info="已预填常用活动链接，可直接修改",
                     lines=1, max_lines=1,
                     placeholder="https://www.yipai360.com/…")
-                ref = gr.Image(label="参考人脸照片", type="numpy", height=220,
-                               sources=["upload", "webcam", "clipboard"])
+                ref = gr.Gallery(
+                    label="参考人脸照片（可上传多张）",
+                    type="numpy", columns=4, object_fit="cover", height=220)
                 with gr.Accordion("高级选项", open=False):
                     threshold = gr.Slider(
                         0.3, 0.8, value=DEFAULT_THRESHOLD, step=0.01,

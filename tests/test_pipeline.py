@@ -102,10 +102,22 @@ def test_extract_reference_from_file_path(tmp_path: Path):
     assert len(embs) == 1
 
 
+def test_extract_reference_accepts_multiple_images():
+    finder = PhotoFinder(cache_root=Path("/tmp"))
+    finder._engine = FakeEngine()
+    img1 = np.zeros((100, 100, 3), dtype=np.uint8)
+    img2 = np.ones((100, 100, 3), dtype=np.uint8)
+
+    embs = finder.extract_reference([img1, img2])
+    assert len(embs) == 2
+    # each image contributes the largest face embedding
+    np.testing.assert_array_equal(embs[0], np.ones(512, dtype=np.float32) * 0.5)
+
+
 def test_extract_reference_raises_when_image_unreadable():
     finder = PhotoFinder(cache_root=Path("/tmp"))
     finder._engine = FakeEngine()
-    with pytest.raises(ValueError, match="cannot read reference image"):
+    with pytest.raises(ValueError, match="no reference image provided"):
         finder.extract_reference(None)
 
 
@@ -115,7 +127,7 @@ def test_extract_reference_raises_when_no_face_detected():
     engine.process = lambda img: []
     finder._engine = engine
 
-    with pytest.raises(ValueError, match="no face detected"):
+    with pytest.raises(ValueError, match="no valid reference face found"):
         finder.extract_reference(np.zeros((100, 100, 3), dtype=np.uint8))
 
 

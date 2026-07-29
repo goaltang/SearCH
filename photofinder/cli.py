@@ -26,7 +26,8 @@ def main(argv=None):
         prog="photofinder",
         description="在一拍即传(yipai360)相册中按人脸查找目标人物的全部照片")
     ap.add_argument("--url", required=True, help="相册链接或 orderId")
-    ap.add_argument("--ref", required=True, help="参考人脸照片路径")
+    ap.add_argument("--ref", required=True, nargs='+',
+                    help="参考人脸照片路径，可传多张")
     ap.add_argument("--max-photos", type=int, default=None,
                     help="只处理前 N 张照片(调试用)")
     ap.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD,
@@ -50,7 +51,7 @@ def main(argv=None):
         print("索引已清空, 将重建")
     t0 = time.time()
     print(f"\r[提取参考人脸特征] {args.ref}", flush=True)
-    logger.info("CLI start: url=%s ref=%s", args.url, args.ref)
+    logger.info("CLI start: url=%s refs=%d", args.url, len(args.ref))
     try:
         results = finder.run(
             args.url, args.ref, max_photos=args.max_photos,
