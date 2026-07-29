@@ -276,7 +276,7 @@ WELCOME_HTML = f"""
   <p>命中照片会以卡片墙形式呈现，包含预览图、相似度和原图链接。</p>
   <div class="pf-steps">
     <div class="pf-step"><span>1</span>粘贴活动相册链接</div>
-    <div class="pf-step"><span>2</span>用摄像头或上传添加参考照片</div>
+    <div class="pf-step"><span>2</span>上传参考照片（手机可直接拍照）</div>
     <div class="pf-step"><span>3</span>点击「开始查找」</div>
   </div>
 </div>
@@ -333,10 +333,10 @@ def _render_results(results, album_url: str) -> str:
         img_src = _thumb_with_bbox(r.thumb_path, r.bbox) or r.preview_url
         cards.append(f"""
 <div class="pf-card">
-  <a class="pf-thumb" href="{r.full_url}" target="_blank" title="查看原图">
+  <div class="pf-thumb">
     <img src="{img_src}" loading="lazy" alt="{fname}"/>
     <span class="pf-score {_score_class(r.score)}">{r.score:.3f}</span>
-  </a>
+  </div>
   <div class="pf-meta">
     <div class="pf-fname" title="{fname}">{fname}</div>
     <div class="pf-meta-row">
@@ -535,8 +535,8 @@ def build_app() -> gr.Blocks:
                     info="已预填常用活动链接，可直接修改",
                     lines=1, max_lines=1,
                     placeholder="https://www.yipai360.com/…")
-                gr.HTML("<p class='pf-hint'>在下方拍照或上传，照片自动加入列表，"
-                        "可反复添加多张；查找时取每张中最清晰的人脸</p>")
+                gr.HTML("<p class='pf-hint'>在下方上传参考照片（手机浏览器可直接拍照），"
+                        "自动加入列表，可反复添加多张；查找时取每张中最清晰的人脸</p>")
                 ref_gallery = gr.Gallery(
                     label="已添加的参考照片",
                     type="numpy", columns=4, object_fit="cover",
