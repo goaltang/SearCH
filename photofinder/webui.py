@@ -255,9 +255,9 @@ HEADER_HTML = f"""
   <div class="pf-hero-row">
     <div class="pf-logo">{_SVG_SEARCH}</div>
     <div>
-      <h1 class="pf-title">活动照片找人</h1>
+      <h1 class="pf-title">找找小禾</h1>
       <p class="pf-sub">粘贴 <b>一拍即传 (yipai360)</b> 活动相册链接，上传一张参考人脸照片，
-        自动遍历相册全部照片（含懒加载），找出目标人物出现的所有瞬间。</p>
+        自动在全部活动照片中找出你出现的所有瞬间。</p>
     </div>
   </div>
   <div class="pf-badges">
@@ -537,7 +537,7 @@ def _clear_gallery():
 
 
 def build_app() -> gr.Blocks:
-    with gr.Blocks(title="活动照片找人") as app:
+    with gr.Blocks(title="找找小禾") as app:
         gr.HTML(HEADER_HTML)
         with gr.Row(equal_height=False, elem_classes=["pf-main-row"]):
             with gr.Column(scale=4, elem_classes=["pf-panel"]):
