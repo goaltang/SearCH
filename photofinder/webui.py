@@ -261,10 +261,10 @@ HEADER_HTML = f"""
     </div>
   </div>
   <div class="pf-badges">
-    <span class="pf-badge">SCRFD 人脸检测</span>
-    <span class="pf-badge">ArcFace 512 维特征</span>
-    <span class="pf-badge">余弦相似度检索</span>
-    <span class="pf-badge pf-badge--green">AI 驱动 · 隐私保护</span>
+    <span class="pf-badge">AI 人脸匹配</span>
+    <span class="pf-badge">秒级搜索</span>
+    <span class="pf-badge">支持多张参考照</span>
+    <span class="pf-badge pf-badge--green">隐私保护 · 不留存照片</span>
   </div>
 </div>
 """
@@ -276,7 +276,7 @@ WELCOME_HTML = f"""
   <p>命中照片会以卡片墙形式呈现，包含预览图、相似度和原图链接。</p>
   <div class="pf-steps">
     <div class="pf-step"><span>1</span>粘贴活动相册链接</div>
-    <div class="pf-step"><span>2</span>上传参考照片（手机可直接拍照）</div>
+    <div class="pf-step"><span>2</span>上传参考照片（正脸、清晰）</div>
     <div class="pf-step"><span>3</span>点击「开始查找」</div>
   </div>
 </div>
@@ -287,6 +287,15 @@ EMPTY_HTML = f"""
   <div>{_SVG_NO_RESULT}</div>
   <h3>未找到匹配照片</h3>
   <p>试试降低相似度阈值，或换一张更清晰的正脸参考照。</p>
+</div>
+"""
+
+LOADING_HTML = """
+<div class="pf-empty" style="border-style:solid;border-color:#e0e7ff;">
+  <div style="font-size:36px;margin-bottom:8px;">⏳</div>
+  <h3>正在查找中…</h3>
+  <p>首次搜索需要下载照片并建立索引，请耐心等待。<br/>
+     再次搜索同一相册会快很多。</p>
 </div>
 """
 
@@ -342,7 +351,7 @@ def _render_results(results, album_url: str) -> str:
     <div class="pf-meta-row">
       <span>ID {r.photo_id}</span>
       <span class="pf-links">
-        <a href="{r.full_url}" target="_blank">原图</a>
+        <a href="{r.full_url}" target="_blank" title="查看大图（部分浏览器可能触发下载）">大图</a>
       </span>
     </div>
   </div>
@@ -411,7 +420,8 @@ def run_search(url, gallery_value, threshold, max_photos, pwd,
     except SearchCancelled:
         logger.info("WebUI search cancelled by user")
         return ("<div class='pf-empty'><h3>搜索已取消</h3>"
-                "<p>你可以随时重新开始查找。</p></div>"), [], cancel_state
+                "<p>你可以随时重新开始查找。</p></div>"), [], cancel_state, \
+            gr.update(visible=False)
     except ValueError as e:
         logger.error("WebUI search error: %s", e)
         raise gr.Error(str(e))
@@ -422,7 +432,7 @@ def run_search(url, gallery_value, threshold, max_photos, pwd,
     from .crawler import album_url, parse_order_id
     logger.info("WebUI search finished: %d hits", len(results))
     return (_render_results(results, album_url(parse_order_id(url.strip()))),
-            results, cancel_state)
+            results, cancel_state, gr.update(visible=bool(results)))
 
 
 def cancel_search(cancel_state):
@@ -451,7 +461,7 @@ def _cleanup_zips() -> None:
         pass
 
 
-def download_all(results):
+def download_all(results, progress=gr.Progress()):
     """Download all hit photos concurrently and pack them into a zip.
 
     Photos are fetched in small batches (peak memory = one batch, not the
@@ -462,7 +472,7 @@ def download_all(results):
     if len(results) > DOWNLOAD_MAX:
         raise gr.Error(
             f"命中 {len(results)} 张，超过单次打包上限 {DOWNLOAD_MAX} 张。"
-            f"请提高相似度阈值缩小范围，或分批用「原图」链接下载")
+            f"请提高相似度阈值缩小范围，或分批用「大图」链接下载")
     import requests as _req
 
     _cleanup_zips()
@@ -475,7 +485,9 @@ def download_all(results):
         return r, resp.content
 
     ok, fail = 0, 0
+    total = len(results)
     batch_size = 12  # bounds peak memory: ~12 x one photo's bytes
+    progress(0, desc=f"打包下载 0/{total}")
     try:
         with zipfile.ZipFile(tmp, "w", zipfile.ZIP_STORED,
                              allowZip64=True) as zf, \
@@ -491,6 +503,8 @@ def download_all(results):
                     except Exception as exc:
                         fail += 1
                         logger.warning("Download failed: %s", exc)
+                    progress((ok + fail) / total,
+                             desc=f"打包下载 {ok + fail}/{total}")
     except Exception:
         tmp.unlink(missing_ok=True)
         raise
@@ -535,7 +549,7 @@ def build_app() -> gr.Blocks:
                     info="已预填常用活动链接，可直接修改",
                     lines=1, max_lines=1,
                     placeholder="https://www.yipai360.com/…")
-                gr.HTML("<p class='pf-hint'>在下方上传参考照片（手机浏览器可直接拍照），"
+                gr.HTML("<p class='pf-hint'>在下方上传参考照片（正脸、光线充足效果最佳），"
                         "自动加入列表，可反复添加多张；查找时取每张中最清晰的人脸</p>")
                 ref_gallery = gr.Gallery(
                     label="已添加的参考照片",
@@ -570,7 +584,7 @@ def build_app() -> gr.Blocks:
                 out = gr.HTML(WELCOME_HTML)
                 with gr.Row():
                     download_btn = gr.Button("📦 打包下载全部命中照片",
-                                             size="sm")
+                                             size="sm", visible=False)
                 download_file = gr.File(label="打包结果", visible=False)
         results_state = gr.State(value=[])
         cancel_state = gr.State(value=None)
@@ -581,10 +595,12 @@ def build_app() -> gr.Blocks:
         ref_gallery.change(check_quality, [ref_gallery], [quality_html])
         undo_btn.click(_undo_last, [ref_gallery], [ref_gallery])
         clear_btn.click(_clear_gallery, [], [ref_gallery])
-        btn.click(run_search,
+        btn.click(lambda: (LOADING_HTML, gr.update(visible=False)),
+                  None, [out, download_btn]
+                  ).then(run_search,
                   [url, ref_gallery, threshold, max_photos, pwd,
                    exclude_text, incremental, cancel_state],
-                  [out, results_state, cancel_state],
+                  [out, results_state, cancel_state, download_btn],
                   concurrency_limit=MAX_CONCURRENT)
         cancel_btn.click(cancel_search, [cancel_state], [cancel_state])
         download_btn.click(download_all, [results_state], [download_file],
