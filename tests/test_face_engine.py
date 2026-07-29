@@ -12,10 +12,19 @@ from photofinder import face_engine as fe
 
 # --------------------------------------------------------------------------- helpers
 
+class FakeSessionOptions:
+    """Minimal stand-in for onnxruntime.SessionOptions."""
+
+    def __init__(self):
+        self.intra_op_num_threads = 0
+        self.inter_op_num_threads = 0
+
+
 class FakeInferenceSession:
     """Base fake onnxruntime InferenceSession for SCRFD/ArcFace."""
 
-    def __init__(self, model_path: str | Path, providers=None):
+    def __init__(self, model_path: str | Path, providers=None,
+                 sess_options=None):
         self.model_path = str(model_path)
 
     def get_inputs(self):
@@ -42,8 +51,8 @@ class FakeSCRFDSession(FakeInferenceSession):
 
 
 class FakeArcFaceSession(FakeInferenceSession):
-    def __init__(self, model_path, providers=None):
-        super().__init__(model_path, providers)
+    def __init__(self, model_path, providers=None, sess_options=None):
+        super().__init__(model_path, providers, sess_options)
         self._embedding = np.random.rand(1, 512).astype(np.float32)
 
     def get_inputs(self):
@@ -59,8 +68,8 @@ class FakeArcFaceSession(FakeInferenceSession):
 class FakeCombinedSession(FakeInferenceSession):
     """Pretends to be SCRFD for detection models and ArcFace for recognition models."""
 
-    def __init__(self, model_path, providers=None):
-        super().__init__(model_path, providers)
+    def __init__(self, model_path, providers=None, sess_options=None):
+        super().__init__(model_path, providers, sess_options)
         self._net_outs: list | None = None
 
     def get_inputs(self):
@@ -87,7 +96,10 @@ class FakeCombinedSession(FakeInferenceSession):
 @pytest.fixture
 def no_ort(monkeypatch):
     """Replace onnxruntime with a minimal stub."""
-    monkeypatch.setattr(fe, "ort", type("ort", (), {"InferenceSession": FakeInferenceSession}))
+    monkeypatch.setattr(fe, "ort", type("ort", (), {
+        "InferenceSession": FakeInferenceSession,
+        "SessionOptions": FakeSessionOptions,
+    }))
 
 
 # --------------------------------------------------------------------------- geometry helpers

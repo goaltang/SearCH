@@ -1,0 +1,32 @@
+# 可选部署方式：docker compose（也可以按 DEPLOY.md 用 docker run）
+# 用法：
+#   cp .env.example .env   # 或直接在下文 environment 里改
+#   docker compose up -d --build
+#
+# deploy.resources.limits 在 docker compose v2 下会生效：
+# 限制容器最多用 3.5 核 / 6G 内存，防止单个容器把整台服务器拖垮。
+
+services:
+  photofinder:
+    build: .
+    image: photofinder
+    container_name: photofinder
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:7860:7860"   # 只绑本机，由 Nginx 对外反代
+    volumes:
+      - ./models:/app/models
+      - ./cache:/app/cache
+    environment:
+      PHOTOFINDER_ACCESS_CODE: ${PHOTOFINDER_ACCESS_CODE:-}
+      PHOTOFINDER_MAX_CONCURRENT: ${PHOTOFINDER_MAX_CONCURRENT:-3}
+      PHOTOFINDER_DOWNLOAD_MAX: ${PHOTOFINDER_DOWNLOAD_MAX:-300}
+      PHOTOFINDER_ORT_THREADS: ${PHOTOFINDER_ORT_THREADS:-2}
+      PHOTOFINDER_INDEX_CACHE: ${PHOTOFINDER_INDEX_CACHE:-4}
+    deploy:
+      resources:
+        limits:
+          cpus: "3.5"
+          memory: 6G
+        reservations:
+          memory: 1G

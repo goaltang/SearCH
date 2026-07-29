@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import base64
 import html
-import io
 import os
 import tempfile
 import threading
+import time
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import cv2
@@ -27,9 +28,11 @@ FINDER = PhotoFinder()
 # PHOTOFINDER_ACCESS_CODE  访问码，留空则无需登录
 # PHOTOFINDER_MAX_CONCURRENT  最大同时搜索数（默认 3）
 # PHOTOFINDER_HOST  监听地址（默认 127.0.0.1，部署时设为 0.0.0.0）
+# PHOTOFINDER_DOWNLOAD_MAX  单次打包下载的最大照片数（默认 300，防止 OOM）
 ACCESS_CODE = os.environ.get("PHOTOFINDER_ACCESS_CODE", "")
 MAX_CONCURRENT = int(os.environ.get("PHOTOFINDER_MAX_CONCURRENT", "3"))
 SERVER_HOST = os.environ.get("PHOTOFINDER_HOST", "127.0.0.1")
+DOWNLOAD_MAX = int(os.environ.get("PHOTOFINDER_DOWNLOAD_MAX", "300"))
 
 STAGE_LABELS = {"meta": "获取照片列表", "download": "下载照片",
                 "index": "建立人脸索引"}
@@ -395,27 +398,72 @@ def cancel_search(cancel_state):
 
 
 # ── batch download ────────────────────────────────────────────────
+# Zip archives are written to a dedicated temp dir (streamed to disk, never
+# fully held in memory) and cleaned up periodically.
+ZIP_DIR = Path(tempfile.gettempdir()) / "photofinder_zips"
+ZIP_MAX_AGE = 3600  # seconds; archives older than this are deleted
+
+
+def _cleanup_zips() -> None:
+    try:
+        ZIP_DIR.mkdir(parents=True, exist_ok=True)
+        now = time.time()
+        for p in ZIP_DIR.glob("photofinder_*.zip"):
+            try:
+                if now - p.stat().st_mtime > ZIP_MAX_AGE:
+                    p.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
 def download_all(results):
+    """Download all hit photos concurrently and pack them into a zip.
+
+    Photos are fetched in small batches (peak memory = one batch, not the
+    whole album) and streamed straight to an on-disk zip file.
+    """
     if not results:
         raise gr.Error("没有可下载的结果，请先搜索")
+    if len(results) > DOWNLOAD_MAX:
+        raise gr.Error(
+            f"命中 {len(results)} 张，超过单次打包上限 {DOWNLOAD_MAX} 张。"
+            f"请提高相似度阈值缩小范围，或分批用「原图」链接下载")
     import requests as _req
-    buf = io.BytesIO()
+
+    _cleanup_zips()
+    ZIP_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = ZIP_DIR / f"photofinder_{int(time.time())}_{os.getpid()}.zip"
+
+    def _fetch(r):
+        resp = _req.get(r.full_url, timeout=120)
+        resp.raise_for_status()
+        return r, resp.content
+
     ok, fail = 0, 0
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
-        for r in results:
-            try:
-                resp = _req.get(r.full_url, timeout=120)
-                resp.raise_for_status()
-                zf.writestr(r.fname or f"{r.photo_id}.jpg", resp.content)
-                ok += 1
-            except Exception as exc:
-                fail += 1
-                logger.warning("Download failed for %s: %s", r.fname, exc)
+    batch_size = 12  # bounds peak memory: ~12 x one photo's bytes
+    try:
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_STORED,
+                             allowZip64=True) as zf, \
+                ThreadPoolExecutor(max_workers=6) as ex:
+            for i in range(0, len(results), batch_size):
+                batch = results[i:i + batch_size]
+                futs = [ex.submit(_fetch, r) for r in batch]
+                for fut in as_completed(futs):
+                    try:
+                        r, content = fut.result()
+                        zf.writestr(r.fname or f"{r.photo_id}.jpg", content)
+                        ok += 1
+                    except Exception as exc:
+                        fail += 1
+                        logger.warning("Download failed: %s", exc)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
     if ok == 0:
+        tmp.unlink(missing_ok=True)
         raise gr.Error(f"全部 {fail} 张下载失败，请检查网络或链接是否过期")
-    buf.seek(0)
-    tmp = Path(tempfile.mkdtemp()) / "photofinder_results.zip"
-    tmp.write_bytes(buf.read())
     logger.info("Batch download: %d ok, %d failed -> %s", ok, fail, tmp)
     return gr.update(value=str(tmp), visible=True)
 

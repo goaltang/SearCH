@@ -7,6 +7,7 @@ Models (buffalo_l pack, https://github.com/deepinsight/insightface):
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import cv2
@@ -17,6 +18,21 @@ from .logger import get_logger, setup_logging
 
 setup_logging()
 logger = get_logger(__name__)
+
+# ONNX Runtime intra-op threads. Default: at most 4 so that several
+# concurrent searches don't oversubscribe the CPU (ORT's own default is
+# "all cores per session", which thrashes under concurrency).
+# Override with PHOTOFINDER_ORT_THREADS.
+_ORT_THREADS = int(os.environ.get(
+    "PHOTOFINDER_ORT_THREADS",
+    str(min(4, os.cpu_count() or 4))))
+
+
+def _session_options() -> "ort.SessionOptions":
+    so = ort.SessionOptions()
+    so.intra_op_num_threads = _ORT_THREADS
+    so.inter_op_num_threads = 1
+    return so
 
 
 def _default_providers() -> list[str]:
@@ -86,7 +102,7 @@ class SCRFD:
         self._feat_stride_fpn = [8, 16, 32]
         self._num_anchors = 2
         self.session = ort.InferenceSession(
-            str(model_path),
+            str(model_path), sess_options=_session_options(),
             providers=providers or _default_providers())
         self.input_name = self.session.get_inputs()[0].name
         out_names = [o.name for o in self.session.get_outputs()]
@@ -174,7 +190,7 @@ class SCRFD:
 class ArcFace:
     def __init__(self, model_path: str | Path, providers=None):
         self.session = ort.InferenceSession(
-            str(model_path),
+            str(model_path), sess_options=_session_options(),
             providers=providers or _default_providers())
         inp = self.session.get_inputs()[0]
         self.input_name = inp.name

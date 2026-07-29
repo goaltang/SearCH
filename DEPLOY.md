@@ -85,15 +85,26 @@ docker run --rm \
 
 ## 5. 启动 Web 服务
 
+**方式 A：docker compose（推荐，自带资源限制）**
+
+```bash
+PHOTOFINDER_ACCESS_CODE="你的访问码" docker compose up -d --build
+# compose 配置限制了容器最多 3.5 核 / 6G 内存，防止拖垮整台服务器
+```
+
+**方式 B：docker run**
+
 ```bash
 docker run -d \
   --name photofinder \
   --restart unless-stopped \
+  --memory 6g --cpus 3.5 \
   -p 127.0.0.1:7860:7860 \
   -v ~/photofinder/models:/app/models \
   -v ~/photofinder/cache:/app/cache \
   -e PHOTOFINDER_ACCESS_CODE="你的访问码" \
   -e PHOTOFINDER_MAX_CONCURRENT=3 \
+  -e PHOTOFINDER_ORT_THREADS=2 \
   photofinder
 ```
 
@@ -104,45 +115,43 @@ docker run -d \
 | `PHOTOFINDER_ACCESS_CODE` | (空) | 访问码，留空则无需登录 |
 | `PHOTOFINDER_MAX_CONCURRENT` | `3` | 最大同时搜索数，超出自动排队 |
 | `PHOTOFINDER_HOST` | `127.0.0.1` | 监听地址，Docker 内已设为 `0.0.0.0` |
+| `PHOTOFINDER_DOWNLOAD_MAX` | `300` | 单次打包下载的最大照片数（防止内存爆掉） |
+| `PHOTOFINDER_ORT_THREADS` | `min(4, 核数)` | 每次 ONNX 推理占用的 CPU 线程数；并发场景建议 `2` |
+| `PHOTOFINDER_INDEX_CACHE` | `4` | 内存中保留几个相册的人脸索引（避免每次搜索重新读盘） |
 
 验证：`curl http://127.0.0.1:7860` 应返回 HTML。
+
+### 并发容量参考
+
+索引已预建的前提下，一次搜索 ≈ 1 次人脸检测（~1-2s CPU）+ 向量比对（<0.5s）：
+
+| 服务器 | 推荐配置 | 可承载能力 |
+|--------|----------|------------|
+| 4 核 8G | `MAX_CONCURRENT=3`, `ORT_THREADS=2` | 同时 3 人搜索，其余排队；10-20 人轮流使用无压力 |
+| 8 核 16G | `MAX_CONCURRENT=5`, `ORT_THREADS=2` | 同时 5 人搜索 |
+
+注意：**「并发搜索数」不等于「在线人数」**。超出并发的用户只是在队列里多等几秒，
+体验略慢但服务不会挂。真正危险的是无限制并发导致 CPU/内存耗尽，上面的限制就是防这个。
 
 ## 6. Nginx 反向代理 + HTTPS
 
 ```bash
 sudo apt install -y nginx certbot python3-certbot-nginx
-```
 
-创建 `/etc/nginx/sites-available/photofinder`：
-
-```nginx
-server {
-    listen 80;
-    server_name photo.你的域名.com;
-
-    client_max_body_size 20m;   # 允许上传较大的自拍照片
-
-    location / {
-        proxy_pass http://127.0.0.1:7860;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 300s;   # 搜索可能耗时较长
-    }
-}
-```
-
-```bash
+# 使用仓库自带的配置（已含每 IP 限流、连接数限制、SSE 支持）
+sudo cp deploy/nginx.conf /etc/nginx/sites-available/photofinder
+sudo nano /etc/nginx/sites-available/photofinder   # 把 server_name 改成你的域名
 sudo ln -s /etc/nginx/sites-available/photofinder /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
 
 # 申请免费 HTTPS 证书（需要域名已解析到本服务器）
 sudo certbot --nginx -d photo.你的域名.com
 ```
+
+该配置在默认反代之外增加了：
+- **限流**：`/queue/join`（搜索提交）每 IP 30 次/分钟、每 IP 最多 20 并发连接，防脚本刷接口
+- **SSE 直通**：`/queue/data` 关闭缓冲，进度条实时推送
+- **gzip**：减小页面体积
 
 ## 7. 域名
 

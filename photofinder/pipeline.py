@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import threading
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -20,6 +22,10 @@ logger = get_logger(__name__)
 # ArcFace(w600k_r50) cosine threshold: same person typically >= 0.6,
 # different people < 0.3. 0.45 is a conservative default for recall.
 DEFAULT_THRESHOLD = 0.45
+
+# How many album indexes stay hot in memory. Each face costs ~2 KB
+# (512 float32), so a 50k-face album is ~100 MB.
+INDEX_CACHE_SIZE = int(os.environ.get("PHOTOFINDER_INDEX_CACHE", "4"))
 
 
 class SearchCancelled(Exception):
@@ -52,14 +58,43 @@ class PhotoFinder:
         self.cache_root = Path(cache_root)
         self.models_dir = Path(models_dir)
         self._engine: FaceEngine | None = None
+        self._engine_lock = threading.Lock()
+        # Per-album FaceIndex instances kept hot in memory (LRU) so repeated
+        # searches don't re-read/re-parse faces.npz + faces.json from disk.
+        self._index_cache: OrderedDict[str, FaceIndex] = OrderedDict()
+        # Per-album build locks: two concurrent searches on the same album
+        # must not build the index simultaneously (wasted work + double
+        # downloads); different albums build independently.
+        self._album_locks: dict[str, threading.Lock] = {}
+        self._meta_lock = threading.Lock()  # guards the two dicts above
 
     @property
     def engine(self) -> FaceEngine:
         if self._engine is None:
-            self._engine = FaceEngine(
-                self.models_dir / "det_10g.onnx",
-                self.models_dir / "w600k_r50.onnx")
+            with self._engine_lock:  # avoid loading models twice concurrently
+                if self._engine is None:
+                    self._engine = FaceEngine(
+                        self.models_dir / "det_10g.onnx",
+                        self.models_dir / "w600k_r50.onnx")
         return self._engine
+
+    def _get_album_lock(self, order_id: str) -> threading.Lock:
+        with self._meta_lock:
+            return self._album_locks.setdefault(order_id, threading.Lock())
+
+    def _get_index(self, order_id: str, index_dir: Path) -> FaceIndex:
+        with self._meta_lock:
+            index = self._index_cache.get(order_id)
+            if index is None:
+                index = FaceIndex(index_dir)
+                self._index_cache[order_id] = index
+                while len(self._index_cache) > INDEX_CACHE_SIZE:
+                    evicted, _ = self._index_cache.popitem(last=False)
+                    logger.info("Evicted index of album %s from memory cache",
+                                evicted)
+            else:
+                self._index_cache.move_to_end(order_id)
+            return index
 
     @staticmethod
     def _read_ref_image(ref_image):
@@ -152,12 +187,16 @@ class PhotoFinder:
             raise ValueError("no usable thumbnails available")
         _check_cancel()
 
-        # 3) face index (incremental)
-        index = FaceIndex(crawler.dir)
-        if excluded_ids:
-            index.exclude(excluded_ids)
-        index.build(self.engine, available, workers=workers, min_face=min_face,
-                    progress_cb=_cb)
+        # 3) face index (incremental). Serialized per album: if another
+        # search is already building this album's index, wait for it instead
+        # of duplicating the work; the build below then finds nothing new
+        # and returns immediately.
+        with self._get_album_lock(order_id):
+            index = self._get_index(order_id, crawler.dir)
+            if excluded_ids:
+                index.exclude(excluded_ids)
+            index.build(self.engine, available, workers=workers,
+                        min_face=min_face, progress_cb=_cb)
         _check_cancel()
 
         # 4) reference embedding + search
