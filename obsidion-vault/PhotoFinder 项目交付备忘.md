@@ -18,29 +18,43 @@ tags:
 ```text
 相册 URL ──► 解析 orderId ──► 调官网 JSON API 分页拉取全部照片元数据
                                 (无头破解 SPA, 天然覆盖懒加载)
-参考照片 ──► SCRFD 检测 ──► ArcFace 512 维特征 ───┐
+参考照片 ──► SCRFD 检测 ──► ArcFace 512 维特征(批量推理) ───┐
                                                   ├──► 余弦相似度检索 ──► 按照片聚合(max)
 下载 720px 缩略图(并发+断点续传) ──► 逐张检测人脸 ──► 增量人脸索引(磁盘缓存)
                                                   │
-结果: 预览图 + 相似度 + 相册原网页链接 + OSS 原图直链
+结果: 预览图(标注人脸框) + 相似度 + 相册原网页链接 + OSS 原图直链
 ```
 
 - **检测模型**：SCRFD `det_10g`
-- **识别模型**：ArcFace `w600k_r50`（512-d 余弦相似度）
+- **识别模型**：ArcFace `w600k_r50`（512-d 余弦相似度，支持批量推理）
+- **GPU 加速**：自动探测 CUDA → DirectML → CPU，无需手动配置
+- **向量检索**：可选 FAISS 加速（>500 条人脸时自动启用）
 - **默认阈值**：`0.45`（同一人通常 ≥ 0.6，不同人 < 0.3）
 - **误检过滤**：小于 24px 的人脸不进入索引
 
-## 2. 本次补齐的交付环节
+## 2. 交付环节
 
 | 序号 | 环节 | 状态 | 说明 |
 |------|------|------|------|
 | 1 | `.gitignore` | ✅ | 排除 `.venv/`、`cache/`、`models/*.onnx`、打包产物等 |
 | 2 | 统一 `threshold` 默认值 | ✅ | CLI/WebUI/Pipeline 统一为 `0.45` |
-| 3 | `pyproject.toml` + 一键脚本 | ✅ | 可安装为 Python 包，支持 `photofinder` 命令；提供 `install.ps1`、`start-webui.ps1`、`start-webui.bat` |
-| 4 | 模型下载脚本 | ✅ | `download_models.py` / `download_models.ps1` 自动下载 InsightFace `buffalo_l` |
-| 5 | 完善 README 文档 | ✅ | 安装、分发、隐私声明、故障排查、VC++ 运行库说明 |
-| 6 | 打包成 `.exe` | ⏭️ | 后续项目再完善时考虑 PyInstaller |
+| 3 | `pyproject.toml` + 一键脚本 | ✅ | 可安装为 Python 包，支持 `photofinder` 命令 |
+| 4 | 模型下载脚本 | ✅ | `download_models.py` / `download_models.ps1` |
+| 5 | 完善 README 文档 | ✅ | 安装、分发、隐私声明、故障排查 |
+| 6 | 打包成 `.exe` | ⏭️ | 后续考虑 PyInstaller |
 | 7 | `LICENSE` 文件 | ✅ | MIT 许可证 + 第三方模型声明 |
+| 8 | GPU 自动探测 | ✅ | CUDA → DirectML → CPU 自动选择 |
+| 9 | ArcFace 批量推理 | ✅ | 同一张图多张人脸一次 ONNX 调用 |
+| 10 | FAISS 可选加速 | ✅ | `pip install -e ".[fast]"`，>500 人脸自动启用 |
+| 11 | 结果标注人脸框 | ✅ | 绿框标注命中人脸位置 |
+| 12 | 打包下载 zip | ✅ | Web UI 一键打包全部命中照片 |
+| 13 | 搜索可取消 | ✅ | 协作式取消，随时中断 |
+| 14 | 参考照片质量反馈 | ✅ | 添加后即时检测人脸并反馈 |
+| 15 | 误命中排除 | ✅ | 按 photoId 排除，持久化到 excluded.json |
+| 16 | 增量拉取 | ✅ | 活动进行中只拉取新增照片 |
+| 17 | CLI JSON 输出 | ✅ | `--json` 结构化输出 |
+| 18 | 密码安全传递 | ✅ | 从 URL query 改到 HTTP header |
+| 19 | 使用手册 | ✅ | [[PhotoFinder 使用手册]] |
 
 ## 3. 关键文件清单
 
@@ -117,6 +131,8 @@ LICENSE
 
 ## 6. 使用方式
 
+详细操作指南见 [[PhotoFinder 使用手册]]。
+
 ### Web UI
 
 ```powershell
@@ -124,14 +140,15 @@ LICENSE
 # 或双击 start-webui.bat
 ```
 
-粘贴相册链接 → 上传参考人脸照片 → 开始查找。
+拍照/上传参考照片 → 开始查找 → 查看结果（绿框标注人脸）→ 打包下载 zip。
 
 ### CLI
 
 ```powershell
 photofinder `
   --url "https://www.yipai360.com/photolivepc/?orderId=YOUR_ORDER_ID" `
-  --ref face.jpg
+  --ref face.jpg `
+  --json
 ```
 
 ## 7. 隐私与合规
@@ -158,11 +175,12 @@ photofinder `
 
 ```text
 cache/{orderId}/
-├── photos.json   # 全部照片元数据
-├── thumbs/       # 720px 检测用图
-├── faces.npz     # 人脸 embedding 矩阵
-├── faces.json    # 人脸对应的 photoId/bbox
-└── done.json     # 已索引 photoId 清单
+├── photos.json     # 全部照片元数据
+├── thumbs/         # 720px 检测用图
+├── faces.npz       # 人脸 embedding 矩阵
+├── faces.json      # 人脸对应的 photoId/bbox
+├── done.json       # 已索引 photoId 清单
+└── excluded.json   # 用户标记的误命中 photoId
 ```
 
 删除 `cache/{orderId}` 可彻底清理该活动数据。
@@ -170,10 +188,17 @@ cache/{orderId}/
 ## 10. 后续待办
 
 - [ ] 考虑 PyInstaller 打包成 `.exe`，方便完全不懂 Python 的用户
-- [x] 添加单元测试（crawler / face_engine / pipeline）
+- [x] 添加单元测试（crawler / face_engine / pipeline / index）
 - [x] 增加日志文件和错误恢复机制
+- [x] GPU 自动探测 + ArcFace 批量推理
+- [x] FAISS 可选加速向量检索
+- [x] 结果标注人脸框 + 打包下载 zip
+- [x] 搜索可取消 + 参考照片质量反馈
+- [x] 误命中排除 + 增量拉取
+- [x] CLI JSON 输出 + 密码安全传递
+- [x] 使用手册
 - [ ] 评估是否支持其他相册平台
 
 ---
 
-*创建于 2026-07-29*
+*创建于 2026-07-29 · 更新于 2026-07-29*
