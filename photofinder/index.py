@@ -10,6 +10,8 @@ Persistence per album (cache/{orderId}/):
 from __future__ import annotations
 
 import json
+import os
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -20,6 +22,14 @@ from .logger import get_logger, setup_logging
 
 setup_logging()
 logger = get_logger(__name__)
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write text via tmp-file + rename so concurrent readers never see a
+    half-written file."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
 
 try:
     import faiss
@@ -32,6 +42,10 @@ class FaceIndex:
     def __init__(self, index_dir: str | Path):
         self.dir = Path(index_dir)
         self.dir.mkdir(parents=True, exist_ok=True)
+        # Guards every read/write of embeddings/faces/done_ids/excluded_ids so
+        # the index can be shared across concurrent searches (see
+        # PhotoFinder._get_index). RLock: save() is called with the lock held.
+        self._lock = threading.RLock()
         self.embeddings: np.ndarray = np.zeros((0, 512), dtype=np.float32)
         self.faces: list[dict] = []
         self.done_ids: set[int] = set()
@@ -61,38 +75,48 @@ class FaceIndex:
             self.reset()
 
     def save(self) -> None:
-        logger.debug("Saving index: %d faces, %d done, %d excluded",
-                     len(self.faces), len(self.done_ids), len(self.excluded_ids))
-        np.savez_compressed(self.dir / "faces.npz",
-                            embeddings=self.embeddings.astype(np.float32))
-        (self.dir / "faces.json").write_text(
-            json.dumps(self.faces, ensure_ascii=False), encoding="utf-8")
-        (self.dir / "done.json").write_text(
-            json.dumps(sorted(self.done_ids)), encoding="utf-8")
-        (self.dir / "excluded.json").write_text(
-            json.dumps(sorted(self.excluded_ids)), encoding="utf-8")
+        with self._lock:
+            logger.debug("Saving index: %d faces, %d done, %d excluded",
+                         len(self.faces), len(self.done_ids),
+                         len(self.excluded_ids))
+            npz_tmp = self.dir / "faces.npz.tmp"
+            # open() handle: np.savez* appends ".npz" to plain file names
+            with open(npz_tmp, "wb") as f:
+                np.savez_compressed(
+                    f, embeddings=self.embeddings.astype(np.float32))
+            os.replace(npz_tmp, self.dir / "faces.npz")
+            _atomic_write_text(self.dir / "faces.json",
+                               json.dumps(self.faces, ensure_ascii=False))
+            _atomic_write_text(self.dir / "done.json",
+                               json.dumps(sorted(self.done_ids)))
+            _atomic_write_text(self.dir / "excluded.json",
+                               json.dumps(sorted(self.excluded_ids)))
 
     def reset(self) -> None:
         """Drop all indexed data (keeps downloaded thumbs)."""
         logger.info("Resetting face index in %s", self.dir)
-        self.embeddings = np.zeros((0, 512), dtype=np.float32)
-        self.faces = []
-        self.done_ids = set()
-        self.excluded_ids = set()
-        for name in ("faces.npz", "faces.json", "done.json", "excluded.json"):
-            p = self.dir / name
-            if p.exists():
-                p.unlink()
+        with self._lock:
+            self.embeddings = np.zeros((0, 512), dtype=np.float32)
+            self.faces = []
+            self.done_ids = set()
+            self.excluded_ids = set()
+            for name in ("faces.npz", "faces.json", "done.json",
+                         "excluded.json"):
+                p = self.dir / name
+                if p.exists():
+                    p.unlink()
 
     # -------------------------------------------------------------- exclusion
     def exclude(self, photo_ids: list[int]) -> None:
         """Mark photos as false positives; they will be skipped in search."""
-        self.excluded_ids.update(photo_ids)
-        self.save()
+        with self._lock:
+            self.excluded_ids.update(photo_ids)
+            self.save()
 
     def unexclude(self, photo_ids: list[int]) -> None:
-        self.excluded_ids.difference_update(photo_ids)
-        self.save()
+        with self._lock:
+            self.excluded_ids.difference_update(photo_ids)
+            self.save()
 
     # ------------------------------------------------------------------ build
     def build(self, engine: FaceEngine, thumbs: dict[int, Path],
@@ -113,7 +137,9 @@ class FaceIndex:
         if skipped:
             logger.warning("Skipping %d missing/invalid thumbs", len(skipped))
 
-        todo = {pid: p for pid, p in valid.items() if pid not in self.done_ids}
+        with self._lock:
+            todo = {pid: p for pid, p in valid.items()
+                    if pid not in self.done_ids}
         if not todo:
             logger.info("No new photos to index in %s", self.dir)
             return 0
@@ -157,13 +183,14 @@ class FaceIndex:
         return total
 
     def _absorb(self, new_embs, new_faces, finished) -> None:
-        if new_embs:
-            block = np.stack(new_embs).astype(np.float32)
-            self.embeddings = np.vstack([self.embeddings, block]) \
-                if len(self.embeddings) else block
-            self.faces.extend(new_faces)
-        self.done_ids.update(finished)
-        self.save()
+        with self._lock:
+            if new_embs:
+                block = np.stack(new_embs).astype(np.float32)
+                self.embeddings = np.vstack([self.embeddings, block]) \
+                    if len(self.embeddings) else block
+                self.faces.extend(new_faces)
+            self.done_ids.update(finished)
+            self.save()
 
     # ----------------------------------------------------------------- search
     def search(self, ref_embeddings: list[np.ndarray],
@@ -173,23 +200,33 @@ class FaceIndex:
         Each result dict: {photo_id, score, bbox} where bbox belongs to the
         highest-scoring face of that photo.
         """
-        if len(self.embeddings) == 0 or not ref_embeddings:
+        # Snapshot under the lock: _absorb() swaps in a new embeddings array
+        # but mutates faces/excluded_ids in place, so copy those. The heavy
+        # math below then runs lock-free on a consistent view.
+        with self._lock:
+            embeddings = self.embeddings
+            faces = list(self.faces)
+            excluded = set(self.excluded_ids)
+        if len(embeddings) == 0 or not ref_embeddings:
             return []
         refs = np.stack([e / np.linalg.norm(e) for e in ref_embeddings])
 
-        if _HAS_FAISS and len(self.embeddings) > 500:
+        if _HAS_FAISS and len(embeddings) > 500:
             idx = faiss.IndexFlatIP(512)
-            idx.add(np.ascontiguousarray(self.embeddings, dtype=np.float32))
-            sims, _ = idx.search(
+            idx.add(np.ascontiguousarray(embeddings, dtype=np.float32))
+            sims, inds = idx.search(
                 np.ascontiguousarray(refs, dtype=np.float32), idx.ntotal)
-            face_best = sims.max(axis=0)
+            # sims/inds are sorted per query; scatter back to original order
+            face_best = np.full(len(embeddings), -np.inf, dtype=np.float32)
+            for i in range(len(refs)):
+                np.maximum.at(face_best, inds[i], sims[i])
         else:
-            face_best = (self.embeddings @ refs.T).max(axis=1)
+            face_best = (embeddings @ refs.T).max(axis=1)
 
         per_photo: dict[int, tuple[float, list]] = {}
-        for m, s in zip(self.faces, face_best):
+        for m, s in zip(faces, face_best):
             pid = m["photo_id"]
-            if pid in self.excluded_ids:
+            if pid in excluded:
                 continue
             prev = per_photo.get(pid)
             if prev is None or s > prev[0]:

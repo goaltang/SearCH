@@ -129,3 +129,37 @@ def test_index_recovers_from_corrupt_data(tmp_path: Path, caplog):
     assert len(index.embeddings) == 0
     assert not (tmp_path / "faces.npz").exists()
     assert any("Corrupt index" in rec.message for rec in caplog.records)
+
+
+def test_faiss_path_matches_numpy(tmp_path: Path):
+    """FAISS search must return the same photo→score mapping as numpy."""
+    faiss = pytest.importorskip("faiss")
+    import photofinder.index as idx_mod
+
+    rng = np.random.default_rng(42)
+    n = 600  # >500 to trigger FAISS path
+    embs = rng.standard_normal((n, 512)).astype(np.float32)
+    embs /= np.linalg.norm(embs, axis=1, keepdims=True)
+
+    index = FaceIndex(tmp_path)
+    index.embeddings = embs
+    index.faces = [{"photo_id": i, "bbox": [0, 0, 30, 30], "det_score": 0.9}
+                   for i in range(n)]
+
+    ref = rng.standard_normal(512).astype(np.float32)
+
+    # numpy path (force by disabling faiss flag)
+    orig = idx_mod._HAS_FAISS
+    idx_mod._HAS_FAISS = False
+    results_np = index.search([ref], threshold=-1.0)
+    idx_mod._HAS_FAISS = orig
+
+    # faiss path
+    results_faiss = index.search([ref], threshold=-1.0)
+
+    scores_np = {r["photo_id"]: r["score"] for r in results_np}
+    scores_faiss = {r["photo_id"]: r["score"] for r in results_faiss}
+    assert scores_np.keys() == scores_faiss.keys()
+    for pid in scores_np:
+        assert scores_np[pid] == pytest.approx(scores_faiss[pid], abs=1e-5), \
+            f"photo {pid}: numpy={scores_np[pid]:.6f} faiss={scores_faiss[pid]:.6f}"
