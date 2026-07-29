@@ -385,20 +385,26 @@ def cancel_search():
 def download_all(results):
     if not results:
         raise gr.Error("没有可下载的结果，请先搜索")
+    import requests as _req
     buf = io.BytesIO()
+    ok, fail = 0, 0
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
         for r in results:
             try:
-                import requests as _req
                 resp = _req.get(r.full_url, timeout=120)
                 resp.raise_for_status()
                 zf.writestr(r.fname or f"{r.photo_id}.jpg", resp.content)
+                ok += 1
             except Exception as exc:
+                fail += 1
                 logger.warning("Download failed for %s: %s", r.fname, exc)
+    if ok == 0:
+        raise gr.Error(f"全部 {fail} 张下载失败，请检查网络或链接是否过期")
     buf.seek(0)
     tmp = Path(tempfile.mkdtemp()) / "photofinder_results.zip"
     tmp.write_bytes(buf.read())
-    return str(tmp)
+    logger.info("Batch download: %d ok, %d failed -> %s", ok, fail, tmp)
+    return gr.update(value=str(tmp), visible=True)
 
 
 def _append_snapshot(gallery_value, snapshot):
@@ -471,7 +477,7 @@ def build_app() -> gr.Blocks:
                 with gr.Row():
                     download_btn = gr.Button("📦 打包下载全部命中照片",
                                              size="sm")
-                download_file = gr.File(visible=False)
+                download_file = gr.File(label="打包结果", visible=False)
         results_state = gr.State(value=[])
 
         # ── events ──
