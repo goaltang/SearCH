@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import html
+from pathlib import Path
 
+import cv2
 import gradio as gr
+import numpy as np
 
 from .logger import get_logger, setup_logging
 from .pipeline import DEFAULT_THRESHOLD, PhotoFinder
@@ -218,7 +221,7 @@ WELCOME_HTML = f"""
   <p>命中照片会以卡片墙形式呈现，包含预览图、相似度和原图链接。</p>
   <div class="pf-steps">
     <div class="pf-step"><span>1</span>粘贴活动相册链接</div>
-    <div class="pf-step"><span>2</span>上传参考人脸照片</div>
+    <div class="pf-step"><span>2</span>用摄像头或上传添加参考照片</div>
     <div class="pf-step"><span>3</span>点击「开始查找」</div>
   </div>
 </div>
@@ -303,6 +306,39 @@ def run_search(url, ref_imgs, threshold, max_photos, pwd, progress=gr.Progress()
     return _render_results(results, album_url(parse_order_id(url.strip())))
 
 
+def _load_uploaded_image(path):
+    """Read an uploaded image file into a numpy array (RGB)."""
+    try:
+        img = cv2.imdecode(np.fromfile(str(path), dtype=np.uint8),
+                           cv2.IMREAD_COLOR)
+        if img is None:
+            return None
+        return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    except Exception as exc:
+        logger.warning("Failed to read uploaded reference image %s: %s", path, exc)
+        return None
+
+
+def _add_references(current, webcam, uploads):
+    """Append webcam snapshot and/or uploaded files to the reference list."""
+    refs = list(current) if current else []
+    if webcam is not None:
+        refs.append(webcam)
+    for f in (uploads or []):
+        if isinstance(f, (str, Path)):
+            img = _load_uploaded_image(f)
+        else:
+            # Gradio sometimes returns a file-like object
+            img = _load_uploaded_image(getattr(f, "name", f))
+        if img is not None:
+            refs.append(img)
+    return refs, refs
+
+
+def _clear_references():
+    return [], []
+
+
 def build_app() -> gr.Blocks:
     with gr.Blocks(title="活动照片找人") as app:
         gr.HTML(HEADER_HTML)
@@ -316,9 +352,20 @@ def build_app() -> gr.Blocks:
                     info="已预填常用活动链接，可直接修改",
                     lines=1, max_lines=1,
                     placeholder="https://www.yipai360.com/…")
-                ref = gr.Gallery(
-                    label="参考人脸照片（可上传多张）",
-                    type="numpy", columns=4, object_fit="cover", height=220)
+                ref_state = gr.State(value=[])
+                ref_gallery = gr.Gallery(
+                    label="已添加的参考照片（可多张）",
+                    type="numpy", columns=4, object_fit="cover", height=140)
+                with gr.Row():
+                    ref_webcam = gr.Image(
+                        label="摄像头拍照", sources=["webcam"], type="numpy",
+                        height=180)
+                    ref_upload = gr.File(
+                        label="上传更多参考照片", file_count="multiple",
+                        file_types=["image"], height=180)
+                with gr.Row():
+                    add_btn = gr.Button("添加参考照片")
+                    clear_btn = gr.Button("清空参考照片")
                 with gr.Accordion("高级选项", open=False):
                     threshold = gr.Slider(
                         0.3, 0.8, value=DEFAULT_THRESHOLD, step=0.01,
@@ -333,7 +380,15 @@ def build_app() -> gr.Blocks:
                 gr.HTML("<p class='pf-panel-title'>"
                         "<span class='pf-step-no'>2</span>查找结果</p>")
                 out = gr.HTML(WELCOME_HTML)
-        btn.click(run_search, [url, ref, threshold, max_photos, pwd], out)
+        add_btn.click(
+            _add_references,
+            [ref_state, ref_webcam, ref_upload],
+            [ref_state, ref_gallery])
+        clear_btn.click(
+            _clear_references,
+            [],
+            [ref_state, ref_gallery])
+        btn.click(run_search, [url, ref_state, threshold, max_photos, pwd], out)
     return app
 
 
