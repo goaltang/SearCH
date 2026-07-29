@@ -13,7 +13,7 @@ services:
     container_name: photofinder
     restart: unless-stopped
     ports:
-      - "127.0.0.1:7860:7860"   # 只绑本机，由 Nginx 对外反代
+      - "7860:7860"
     volumes:
       - ./models:/app/models
       - ./cache:/app/cache
