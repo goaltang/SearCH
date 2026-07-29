@@ -343,7 +343,6 @@ def _render_results(results, album_url: str) -> str:
       <span>ID {r.photo_id}</span>
       <span class="pf-links">
         <a href="{r.full_url}" target="_blank">原图</a>
-        <a href="{album_url}" target="_blank">活动网页</a>
       </span>
     </div>
   </div>
