@@ -321,7 +321,8 @@ def _render_results(results, album_url: str) -> str:
 # ── quality feedback ──────────────────────────────────────────────
 def check_quality(gallery_value):
     """Instant face-detection feedback for the current reference photos."""
-    imgs = [img for img, _c in (gallery_value or [])]
+    imgs = [cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+            for img, _c in (gallery_value or [])]
     if not imgs:
         return ""
     parts = []
@@ -344,7 +345,8 @@ def run_search(url, gallery_value, threshold, max_photos, pwd,
                progress=gr.Progress()):
     if not url or not url.strip():
         raise gr.Error("请输入活动相册链接")
-    ref_imgs = [img for img, _cap in (gallery_value or [])]
+    ref_imgs = [cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+                for img, _cap in (gallery_value or [])]
     if not ref_imgs:
         raise gr.Error("请先添加至少一张参考人脸照片")
 
