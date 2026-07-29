@@ -200,6 +200,40 @@ body, .gradio-container {
 .pf-links { margin-left: auto; display: flex; gap: 10px; }
 .pf-links a { color: var(--pf-primary-dark); text-decoration: none; font-weight: 600; }
 .pf-links a:hover { text-decoration: underline; }
+
+/* ---------- Mobile ---------- */
+@media (max-width: 768px) {
+  .gradio-container { padding-top: 12px !important; }
+  /* 主面板改为纵向堆叠：先填条件，再看结果 */
+  .pf-main-row { flex-direction: column !important; gap: 16px !important; }
+  .pf-main-row .pf-panel {
+    flex-grow: 1 !important; flex-basis: auto !important;
+    min-width: 0 !important; width: 100% !important;
+  }
+}
+
+@media (max-width: 640px) {
+  .pf-hero { padding: 2px 2px 14px; }
+  .pf-hero-row { gap: 12px; }
+  .pf-logo { width: 44px; height: 44px; border-radius: 12px; }
+  .pf-title { font-size: 23px; }
+  .pf-sub { font-size: 13px; }
+  .pf-badge { font-size: 11px; padding: 3px 10px; }
+  .pf-panel { padding: 14px; border-radius: 12px; }
+  .pf-welcome, .pf-empty { padding: 36px 16px; }
+  .pf-steps { max-width: 100%; }
+  /* iOS 聚焦小于 16px 的输入框会自动放大页面，统一抬到 16px */
+  .gradio-container input, .gradio-container textarea { font-size: 16px !important; }
+  /* 结果卡片墙：固定 212px 改为两列流式网格 */
+  .pf-grid {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px;
+  }
+  .pf-card { width: auto; }
+  .pf-thumb img { height: 128px; }
+  .pf-summary { flex-wrap: wrap; gap: 8px; }
+  .pf-meta { padding: 8px 10px 9px; }
+  .pf-meta-row { flex-wrap: wrap; gap: 4px; }
+}
 """
 
 _SVG_SEARCH = ("<svg viewBox='0 0 24 24' width='28' height='28' fill='none' "
@@ -492,7 +526,7 @@ def _clear_gallery():
 def build_app() -> gr.Blocks:
     with gr.Blocks(title="活动照片找人") as app:
         gr.HTML(HEADER_HTML)
-        with gr.Row(equal_height=False):
+        with gr.Row(equal_height=False, elem_classes=["pf-main-row"]):
             with gr.Column(scale=4, elem_classes=["pf-panel"]):
                 gr.HTML("<p class='pf-panel-title'>"
                         "<span class='pf-step-no'>1</span>设置查找条件</p>")
