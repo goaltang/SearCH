@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import html
 import io
+import os
 import tempfile
 import threading
 import zipfile
@@ -22,7 +23,13 @@ logger = get_logger(__name__)
 
 FINDER = PhotoFinder()
 
-_cancel_event = threading.Event()
+# ── 部署配置（环境变量） ─────────────────────────────────────────
+# PHOTOFINDER_ACCESS_CODE  访问码，留空则无需登录
+# PHOTOFINDER_MAX_CONCURRENT  最大同时搜索数（默认 3）
+# PHOTOFINDER_HOST  监听地址（默认 127.0.0.1，部署时设为 0.0.0.0）
+ACCESS_CODE = os.environ.get("PHOTOFINDER_ACCESS_CODE", "")
+MAX_CONCURRENT = int(os.environ.get("PHOTOFINDER_MAX_CONCURRENT", "3"))
+SERVER_HOST = os.environ.get("PHOTOFINDER_HOST", "127.0.0.1")
 
 STAGE_LABELS = {"meta": "获取照片列表", "download": "下载照片",
                 "index": "建立人脸索引"}
@@ -220,7 +227,7 @@ HEADER_HTML = f"""
     <span class="pf-badge">SCRFD 人脸检测</span>
     <span class="pf-badge">ArcFace 512 维特征</span>
     <span class="pf-badge">余弦相似度检索</span>
-    <span class="pf-badge pf-badge--green">本地计算 · 隐私安全</span>
+    <span class="pf-badge pf-badge--green">AI 驱动 · 隐私保护</span>
   </div>
 </div>
 """
@@ -333,20 +340,23 @@ def check_quality(gallery_value):
 
 # ── search ────────────────────────────────────────────────────────
 def run_search(url, gallery_value, threshold, max_photos, pwd,
-               exclude_text, incremental, progress=gr.Progress()):
+               exclude_text, incremental, cancel_state,
+               progress=gr.Progress()):
     if not url or not url.strip():
         raise gr.Error("请输入活动相册链接")
     ref_imgs = [img for img, _cap in (gallery_value or [])]
     if not ref_imgs:
         raise gr.Error("请先添加至少一张参考人脸照片")
 
-    _cancel_event.clear()
+    if cancel_state is None:
+        cancel_state = threading.Event()
+    cancel_state.clear()
     max_n = int(max_photos) if max_photos and max_photos > 0 else None
     excl = [int(x) for x in (exclude_text or "").replace("，", ",").split(",")
             if x.strip().isdigit()] if exclude_text else None
 
     def cb(stage, done, total):
-        if _cancel_event.is_set():
+        if cancel_state.is_set():
             raise SearchCancelled("搜索已取消")
         label = STAGE_LABELS.get(stage, stage)
         frac = done / total if total else 0
@@ -358,12 +368,12 @@ def run_search(url, gallery_value, threshold, max_photos, pwd,
         results = FINDER.run(
             url.strip(), ref_imgs, max_photos=max_n,
             threshold=float(threshold), pwd=pwd or None,
-            progress_cb=cb, cancel_event=_cancel_event,
+            progress_cb=cb, cancel_event=cancel_state,
             excluded_ids=excl, incremental=bool(incremental))
     except SearchCancelled:
         logger.info("WebUI search cancelled by user")
         return ("<div class='pf-empty'><h3>搜索已取消</h3>"
-                "<p>你可以随时重新开始查找。</p></div>"), []
+                "<p>你可以随时重新开始查找。</p></div>"), [], cancel_state
     except ValueError as e:
         logger.error("WebUI search error: %s", e)
         raise gr.Error(str(e))
@@ -374,11 +384,12 @@ def run_search(url, gallery_value, threshold, max_photos, pwd,
     from .crawler import album_url, parse_order_id
     logger.info("WebUI search finished: %d hits", len(results))
     return (_render_results(results, album_url(parse_order_id(url.strip()))),
-            results)
+            results, cancel_state)
 
 
-def cancel_search():
-    _cancel_event.set()
+def cancel_search(cancel_state):
+    if cancel_state is not None:
+        cancel_state.set()
 
 
 # ── batch download ────────────────────────────────────────────────
@@ -479,6 +490,7 @@ def build_app() -> gr.Blocks:
                                              size="sm")
                 download_file = gr.File(label="打包结果", visible=False)
         results_state = gr.State(value=[])
+        cancel_state = gr.State(value=None)
 
         # ── events ──
         ref_input.change(_append_snapshot,
@@ -488,13 +500,24 @@ def build_app() -> gr.Blocks:
         clear_btn.click(_clear_gallery, [], [ref_gallery])
         btn.click(run_search,
                   [url, ref_gallery, threshold, max_photos, pwd,
-                   exclude_text, incremental],
-                  [out, results_state])
-        cancel_btn.click(cancel_search, [], [])
-        download_btn.click(download_all, [results_state], [download_file])
+                   exclude_text, incremental, cancel_state],
+                  [out, results_state, cancel_state],
+                  concurrency_limit=MAX_CONCURRENT)
+        cancel_btn.click(cancel_search, [cancel_state], [cancel_state])
+        download_btn.click(download_all, [results_state], [download_file],
+                           concurrency_limit=2)
     return app
 
 
 if __name__ == "__main__":
-    build_app().launch(server_name="127.0.0.1", server_port=7860,
-                       theme=THEME, css=CSS)
+    app = build_app()
+    app.queue(default_concurrency_limit=2)
+
+    auth = None
+    if ACCESS_CODE:
+        def auth(username, password):
+            return password == ACCESS_CODE
+        logger.info("Access code protection enabled")
+
+    app.launch(server_name=SERVER_HOST, server_port=7860,
+               theme=THEME, css=CSS, auth=auth)

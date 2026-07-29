@@ -1,0 +1,11 @@
+.venv/
+cache/
+models/*.onnx
+dist/
+*.egg-info/
+.git/
+.pytest_cache/
+logs/
+obsidion-vault/
+__pycache__/
+*.pyc

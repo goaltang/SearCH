@@ -27,8 +27,10 @@ def main(argv=None):
         prog="photofinder",
         description="在一拍即传(yipai360)相册中按人脸查找目标人物的全部照片")
     ap.add_argument("--url", required=True, help="相册链接或 orderId")
-    ap.add_argument("--ref", required=True, nargs='+',
-                    help="参考人脸照片路径，可传多张")
+    ap.add_argument("--ref", nargs='+', default=None,
+                    help="参考人脸照片路径，可传多张（--prepare 模式下可省略）")
+    ap.add_argument("--prepare", action="store_true",
+                    help="仅下载照片并建立人脸索引，不进行搜索（无需 --ref）")
     ap.add_argument("--max-photos", type=int, default=None,
                     help="只处理前 N 张照片(调试用)")
     ap.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD,
@@ -51,6 +53,32 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     finder = PhotoFinder(cache_root=args.cache, models_dir=args.models)
+
+    # ── prepare 模式：仅下载 + 建索引 ──
+    if args.prepare:
+        from .crawler import AlbumCrawler, parse_order_id
+        from .index import FaceIndex
+        order_id = parse_order_id(args.url)
+        crawler = AlbumCrawler(order_id, args.cache, pwd=args.pwd)
+        print(f"[准备模式] 相册 {order_id}")
+        photos = crawler.get_metadata(max_photos=args.max_photos,
+                                      refresh=args.refresh,
+                                      progress_cb=_progress)
+        print(f"\n照片列表: {len(photos)} 张")
+        thumbs = crawler.download_thumbs(photos, progress_cb=_progress)
+        available = {pid: p for pid, p in thumbs.items()
+                     if p is not None and p.exists()}
+        print(f"\n缩略图就绪: {len(available)} 张")
+        index = FaceIndex(crawler.dir)
+        index.build(finder.engine, available, workers=args.workers,
+                    min_face=args.min_face, progress_cb=_progress)
+        print(f"\n索引完成: {len(index.faces)} 张人脸, "
+              f"{len(index.done_ids)} 张照片已处理")
+        return 0
+
+    if not args.ref:
+        ap.error("搜索模式下必须提供 --ref 参考照片（或使用 --prepare 仅建索引）")
+
     if args.rebuild_index:
         from .crawler import parse_order_id
         from .index import FaceIndex
