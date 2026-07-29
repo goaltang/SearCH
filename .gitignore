@@ -46,6 +46,7 @@ coverage.xml
 cache/
 logs/
 *.log
+*.zip
 
 # Large model files (download separately, see README / download_models.py)
 models/*.onnx
