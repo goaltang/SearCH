@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json as _json
 import sys
 import time
 
@@ -33,12 +34,18 @@ def main(argv=None):
     ap.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD,
                     help="人脸相似度阈值 (默认 %(default)s)")
     ap.add_argument("--refresh", action="store_true", help="重新拉取照片列表")
+    ap.add_argument("--incremental", action="store_true",
+                    help="仅拉取上次之后新增的照片")
     ap.add_argument("--pwd", default=None, help="相册密码(如有)")
     ap.add_argument("--workers", type=int, default=4, help="索引进程并发数")
     ap.add_argument("--min-face", type=float, default=24.0,
                     help="最小人脸宽度像素, 过滤误检 (默认 24)")
     ap.add_argument("--rebuild-index", action="store_true",
                     help="清空人脸索引并重建 (不重新下载图片)")
+    ap.add_argument("--exclude", type=int, nargs='*', default=None,
+                    help="排除指定 photoId (误命中)")
+    ap.add_argument("--json", action="store_true", dest="as_json",
+                    help="以 JSON 格式输出结果")
     ap.add_argument("--cache", default="cache", help="缓存目录")
     ap.add_argument("--models", default="models", help="模型目录")
     args = ap.parse_args(argv)
@@ -57,7 +64,8 @@ def main(argv=None):
             args.url, args.ref, max_photos=args.max_photos,
             threshold=args.threshold, refresh=args.refresh, pwd=args.pwd,
             workers=args.workers, min_face=args.min_face,
-            progress_cb=_progress)
+            progress_cb=_progress, excluded_ids=args.exclude,
+            incremental=args.incremental)
     except ValueError as e:
         logger.error("Pipeline error: %s", e)
         print(f"\n错误: {e}", file=sys.stderr)
@@ -69,13 +77,20 @@ def main(argv=None):
 
     elapsed = time.time() - t0
     logger.info("CLI finish: %d hits in %.1fs", len(results), elapsed)
-    print(f"\n\n完成, 耗时 {elapsed:.1f}s, "
-          f"命中 {len(results)} 张 (阈值 {args.threshold})\n")
-    print(f"{'score':>6}  {'文件名':<20}  原图链接")
-    for r in results:
-        print(f"{r.score:>6.3f}  {r.fname:<20}  {r.full_url}")
-    if results:
-        print(f"\n相册原网页: {results[0].album_url}")
+
+    if args.as_json:
+        out = [{"photo_id": r.photo_id, "fname": r.fname, "score": r.score,
+                "full_url": r.full_url, "preview_url": r.preview_url,
+                "bbox": r.bbox} for r in results]
+        print(_json.dumps(out, ensure_ascii=False, indent=2))
+    else:
+        print(f"\n\n完成, 耗时 {elapsed:.1f}s, "
+              f"命中 {len(results)} 张 (阈值 {args.threshold})\n")
+        print(f"{'score':>6}  {'文件名':<20}  原图链接")
+        for r in results:
+            print(f"{r.score:>6.3f}  {r.fname:<20}  {r.full_url}")
+        if results:
+            print(f"\n相册原网页: {results[0].album_url}")
     return 0
 
 

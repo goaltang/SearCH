@@ -98,6 +98,8 @@ class AlbumCrawler:
         self.tag_id = tag_id
         self.session = requests.Session()
         self.session.headers.update(HEADERS)
+        if pwd:
+            self.session.headers["pwd"] = pwd
 
     # ------------------------------------------------------------------ meta
     def fetch_metadata(self, max_photos: int | None = None,
@@ -109,8 +111,6 @@ class AlbumCrawler:
         total = None
         while True:
             params = {"page": page, "pageSize": PAGE_SIZE}
-            if self.pwd:
-                params["pwd"] = self.pwd
             if self.tag_id:
                 params["tagId"] = self.tag_id
             for attempt in range(4):
@@ -229,3 +229,86 @@ class AlbumCrawler:
             logger.warning("Downloaded %d/%d thumbs for order %s",
                            len(done), total, self.order_id)
         return done
+
+    # ----------------------------------------------------------- incremental
+    def fetch_incremental(self, progress_cb=None) -> list[Photo]:
+        """Fetch only photos added since the last cached snapshot.
+
+        Returns the list of *new* photos (already appended to cache).
+        """
+        cached = self.load_metadata()
+        if cached is None:
+            return self.fetch_metadata(progress_cb=progress_cb)
+        old_photos, _complete = cached
+        known_ids = {p.photo_id for p in old_photos}
+        max_id = max(known_ids) if known_ids else 0
+
+        new_photos: list[Photo] = []
+        page = 1
+        while True:
+            params = {"page": page, "pageSize": PAGE_SIZE}
+            if self.tag_id:
+                params["tagId"] = self.tag_id
+            try:
+                r = self.session.get(
+                    f"{API_BASE}/api/v1/yipai/order/{self.order_id}/audience/photos",
+                    params=params, timeout=30)
+                r.raise_for_status()
+                data = r.json()["data"]
+            except Exception as exc:
+                logger.warning("Incremental fetch failed page %d: %s", page, exc)
+                break
+            batch = [Photo.from_api(p) for p in data.get("photos", [])]
+            fresh = [p for p in batch if p.photo_id not in known_ids]
+            new_photos.extend(fresh)
+            if progress_cb:
+                progress_cb("meta", len(new_photos), None)
+            pg = data.get("pagination", {})
+            if not batch or page >= pg.get("totalPage", page):
+                break
+            # Stop early once we've passed all cached ids (API is desc by id)
+            if batch and min(p.photo_id for p in batch) <= max_id:
+                break
+            page += 1
+
+        if new_photos:
+            merged = old_photos + new_photos
+            self._save_metadata(merged, complete=True)
+            logger.info("Incremental: +%d new photos (total %d)",
+                        len(new_photos), len(merged))
+        return new_photos
+
+    # --------------------------------------------------------- batch download
+    def download_full_images(self, urls: dict[str, str],
+                             out_dir: str | Path,
+                             workers: int = 6) -> dict[str, Path]:
+        """Download full-resolution images.
+
+        urls: {filename: url}.  Returns {filename: local_path} for successes.
+        """
+        out = Path(out_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        results: dict[str, Path] = {}
+
+        def _dl(fname: str, url: str):
+            dest = out / fname
+            if dest.exists():
+                return fname, dest
+            try:
+                r = self.session.get(url, timeout=120)
+                r.raise_for_status()
+                tmp = dest.with_suffix(".part")
+                tmp.write_bytes(r.content)
+                tmp.rename(dest)
+                return fname, dest
+            except Exception as exc:
+                logger.warning("Full-image download failed %s: %s", fname, exc)
+                return fname, None
+
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = [ex.submit(_dl, f, u) for f, u in urls.items()]
+            for fut in as_completed(futs):
+                fname, path = fut.result()
+                if path is not None:
+                    results[fname] = path
+        return results

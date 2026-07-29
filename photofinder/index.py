@@ -1,9 +1,10 @@
 """Face embedding index: build incrementally from cached thumbs, search by cosine similarity.
 
 Persistence per album (cache/{orderId}/):
-    faces.npz   - float32 (N, 512) embedding matrix, aligned with faces.json
-    faces.json  - [{photo_id, bbox, det_score}] one row per detected face
-    done.json   - [photo_id] all photos already processed (incl. no-face ones)
+    faces.npz      - float32 (N, 512) embedding matrix, aligned with faces.json
+    faces.json     - [{photo_id, bbox, det_score}] one row per detected face
+    done.json      - [photo_id] all photos already processed (incl. no-face ones)
+    excluded.json  - [photo_id] user-marked false positives to skip in search
 """
 
 from __future__ import annotations
@@ -20,6 +21,12 @@ from .logger import get_logger, setup_logging
 setup_logging()
 logger = get_logger(__name__)
 
+try:
+    import faiss
+    _HAS_FAISS = True
+except ImportError:
+    _HAS_FAISS = False
+
 
 class FaceIndex:
     def __init__(self, index_dir: str | Path):
@@ -28,13 +35,14 @@ class FaceIndex:
         self.embeddings: np.ndarray = np.zeros((0, 512), dtype=np.float32)
         self.faces: list[dict] = []
         self.done_ids: set[int] = set()
+        self.excluded_ids: set[int] = set()
         self._load()
 
     # ------------------------------------------------------------ persistence
     def _load(self) -> None:
-        emb_p, faces_p, done_p = (self.dir / "faces.npz",
-                                  self.dir / "faces.json",
-                                  self.dir / "done.json")
+        emb_p, faces_p, done_p, excl_p = (
+            self.dir / "faces.npz", self.dir / "faces.json",
+            self.dir / "done.json", self.dir / "excluded.json")
         try:
             if emb_p.exists() and faces_p.exists():
                 self.embeddings = np.load(emb_p)["embeddings"]
@@ -45,18 +53,24 @@ class FaceIndex:
                         f"faces.npz ({len(self.embeddings)}) mismatch")
             if done_p.exists():
                 self.done_ids = set(json.loads(done_p.read_text(encoding="utf-8")))
+            if excl_p.exists():
+                self.excluded_ids = set(
+                    json.loads(excl_p.read_text(encoding="utf-8")))
         except Exception as exc:
             logger.error("Corrupt index in %s, resetting: %s", self.dir, exc)
             self.reset()
 
     def save(self) -> None:
-        logger.debug("Saving index: %d faces, %d done", len(self.faces), len(self.done_ids))
+        logger.debug("Saving index: %d faces, %d done, %d excluded",
+                     len(self.faces), len(self.done_ids), len(self.excluded_ids))
         np.savez_compressed(self.dir / "faces.npz",
                             embeddings=self.embeddings.astype(np.float32))
         (self.dir / "faces.json").write_text(
             json.dumps(self.faces, ensure_ascii=False), encoding="utf-8")
         (self.dir / "done.json").write_text(
             json.dumps(sorted(self.done_ids)), encoding="utf-8")
+        (self.dir / "excluded.json").write_text(
+            json.dumps(sorted(self.excluded_ids)), encoding="utf-8")
 
     def reset(self) -> None:
         """Drop all indexed data (keeps downloaded thumbs)."""
@@ -64,10 +78,21 @@ class FaceIndex:
         self.embeddings = np.zeros((0, 512), dtype=np.float32)
         self.faces = []
         self.done_ids = set()
-        for name in ("faces.npz", "faces.json", "done.json"):
+        self.excluded_ids = set()
+        for name in ("faces.npz", "faces.json", "done.json", "excluded.json"):
             p = self.dir / name
             if p.exists():
                 p.unlink()
+
+    # -------------------------------------------------------------- exclusion
+    def exclude(self, photo_ids: list[int]) -> None:
+        """Mark photos as false positives; they will be skipped in search."""
+        self.excluded_ids.update(photo_ids)
+        self.save()
+
+    def unexclude(self, photo_ids: list[int]) -> None:
+        self.excluded_ids.difference_update(photo_ids)
+        self.save()
 
     # ------------------------------------------------------------------ build
     def build(self, engine: FaceEngine, thumbs: dict[int, Path],
@@ -143,17 +168,33 @@ class FaceIndex:
     # ----------------------------------------------------------------- search
     def search(self, ref_embeddings: list[np.ndarray],
                threshold: float = 0.35, top_k: int | None = None) -> list[dict]:
-        """Aggregate max cosine similarity per photo. Returns sorted matches."""
+        """Aggregate max cosine similarity per photo. Returns sorted matches.
+
+        Each result dict: {photo_id, score, bbox} where bbox belongs to the
+        highest-scoring face of that photo.
+        """
         if len(self.embeddings) == 0 or not ref_embeddings:
             return []
         refs = np.stack([e / np.linalg.norm(e) for e in ref_embeddings])
-        face_best = (self.embeddings @ refs.T).max(axis=1)
-        per_photo: dict[int, float] = {}
+
+        if _HAS_FAISS and len(self.embeddings) > 500:
+            idx = faiss.IndexFlatIP(512)
+            idx.add(np.ascontiguousarray(self.embeddings, dtype=np.float32))
+            sims, _ = idx.search(
+                np.ascontiguousarray(refs, dtype=np.float32), idx.ntotal)
+            face_best = sims.max(axis=0)
+        else:
+            face_best = (self.embeddings @ refs.T).max(axis=1)
+
+        per_photo: dict[int, tuple[float, list]] = {}
         for m, s in zip(self.faces, face_best):
             pid = m["photo_id"]
-            if s > per_photo.get(pid, -1.0):
-                per_photo[pid] = float(s)
-        results = [{"photo_id": pid, "score": sc}
-                   for pid, sc in per_photo.items() if sc >= threshold]
+            if pid in self.excluded_ids:
+                continue
+            prev = per_photo.get(pid)
+            if prev is None or s > prev[0]:
+                per_photo[pid] = (float(s), m.get("bbox", []))
+        results = [{"photo_id": pid, "score": sc, "bbox": bbox}
+                   for pid, (sc, bbox) in per_photo.items() if sc >= threshold]
         results.sort(key=lambda r: r["score"], reverse=True)
         return results[:top_k] if top_k else results

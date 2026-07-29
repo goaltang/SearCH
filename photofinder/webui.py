@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import base64
 import html
+import io
+import tempfile
+import threading
+import zipfile
 from pathlib import Path
 
 import cv2
@@ -10,12 +15,14 @@ import gradio as gr
 import numpy as np
 
 from .logger import get_logger, setup_logging
-from .pipeline import DEFAULT_THRESHOLD, PhotoFinder
+from .pipeline import DEFAULT_THRESHOLD, PhotoFinder, SearchCancelled
 
 setup_logging()
 logger = get_logger(__name__)
 
 FINDER = PhotoFinder()
+
+_cancel_event = threading.Event()
 
 STAGE_LABELS = {"meta": "获取照片列表", "download": "下载照片",
                 "index": "建立人脸索引"}
@@ -98,6 +105,10 @@ body, .gradio-container {
   background: linear-gradient(135deg, #6366f1, #8b5cf6); color: #fff;
   font-size: 12px; font-weight: 700;
   display: inline-flex; align-items: center; justify-content: center;
+}
+
+.pf-hint {
+  margin: 4px 0 8px; font-size: 12px; color: #94a3b8; line-height: 1.6;
 }
 
 /* ---------- Run button ---------- */
@@ -244,16 +255,42 @@ def _score_class(score: float) -> str:
     return "pf-score--low"
 
 
+def _thumb_with_bbox(thumb_path: str, bbox: list[float],
+                     max_width: int = 420) -> str | None:
+    """Draw bbox on local thumbnail, return base64 data-URI (or None)."""
+    if not bbox or len(bbox) < 4:
+        return None
+    try:
+        img = cv2.imdecode(np.fromfile(thumb_path, dtype=np.uint8),
+                           cv2.IMREAD_COLOR)
+        if img is None:
+            return None
+        h, w = img.shape[:2]
+        if w > max_width:
+            s = max_width / w
+            img = cv2.resize(img, (max_width, int(h * s)))
+            bbox = [v * s for v in bbox]
+        x1, y1, x2, y2 = (int(v) for v in bbox)
+        cv2.rectangle(img, (x1, y1), (x2, y2), (0, 220, 80), 2)
+        ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 82])
+        if not ok:
+            return None
+        return "data:image/jpeg;base64," + base64.b64encode(buf).decode()
+    except Exception:
+        return None
+
+
 def _render_results(results, album_url: str) -> str:
     if not results:
         return EMPTY_HTML
     cards = []
     for r in results:
         fname = html.escape(r.fname)
+        img_src = _thumb_with_bbox(r.thumb_path, r.bbox) or r.preview_url
         cards.append(f"""
 <div class="pf-card">
   <a class="pf-thumb" href="{r.full_url}" target="_blank" title="查看原图">
-    <img src="{r.preview_url}" loading="lazy" alt="{fname}"/>
+    <img src="{img_src}" loading="lazy" alt="{fname}"/>
     <span class="pf-score {_score_class(r.score)}">{r.score:.3f}</span>
   </a>
   <div class="pf-meta">
@@ -274,15 +311,43 @@ def _render_results(results, album_url: str) -> str:
             f"<div class='pf-grid'>" + "".join(cards) + "</div>")
 
 
-def run_search(url, ref_imgs, threshold, max_photos, pwd, progress=gr.Progress()):
+# ── quality feedback ──────────────────────────────────────────────
+def check_quality(gallery_value):
+    """Instant face-detection feedback for the current reference photos."""
+    imgs = [img for img, _c in (gallery_value or [])]
+    if not imgs:
+        return ""
+    parts = []
+    for i, img in enumerate(imgs, 1):
+        faces = FINDER.engine.process(img)
+        if not faces:
+            parts.append(f"第{i}张：<b style='color:#dc2626'>未检测到人脸</b>，"
+                         f"请换一张清晰正脸")
+        elif len(faces) > 1:
+            parts.append(f"第{i}张：检测到 {len(faces)} 张人脸，"
+                         f"将使用最大的一张")
+        else:
+            parts.append(f"第{i}张：<b style='color:#16a34a'>✓ 人脸清晰</b>")
+    return "<p class='pf-hint'>" + "；".join(parts) + "</p>"
+
+
+# ── search ────────────────────────────────────────────────────────
+def run_search(url, gallery_value, threshold, max_photos, pwd,
+               exclude_text, incremental, progress=gr.Progress()):
     if not url or not url.strip():
         raise gr.Error("请输入活动相册链接")
+    ref_imgs = [img for img, _cap in (gallery_value or [])]
     if not ref_imgs:
-        raise gr.Error("请上传至少一张参考人脸照片")
+        raise gr.Error("请先添加至少一张参考人脸照片")
 
+    _cancel_event.clear()
     max_n = int(max_photos) if max_photos and max_photos > 0 else None
+    excl = [int(x) for x in (exclude_text or "").replace("，", ",").split(",")
+            if x.strip().isdigit()] if exclude_text else None
 
     def cb(stage, done, total):
+        if _cancel_event.is_set():
+            raise SearchCancelled("搜索已取消")
         label = STAGE_LABELS.get(stage, stage)
         frac = done / total if total else 0
         progress(frac, desc=f"{label} {done}/{total or '?'}")
@@ -293,7 +358,12 @@ def run_search(url, ref_imgs, threshold, max_photos, pwd, progress=gr.Progress()
         results = FINDER.run(
             url.strip(), ref_imgs, max_photos=max_n,
             threshold=float(threshold), pwd=pwd or None,
-            progress_cb=cb)
+            progress_cb=cb, cancel_event=_cancel_event,
+            excluded_ids=excl, incremental=bool(incremental))
+    except SearchCancelled:
+        logger.info("WebUI search cancelled by user")
+        return ("<div class='pf-empty'><h3>搜索已取消</h3>"
+                "<p>你可以随时重新开始查找。</p></div>"), []
     except ValueError as e:
         logger.error("WebUI search error: %s", e)
         raise gr.Error(str(e))
@@ -303,40 +373,53 @@ def run_search(url, ref_imgs, threshold, max_photos, pwd, progress=gr.Progress()
     progress(1, desc="完成")
     from .crawler import album_url, parse_order_id
     logger.info("WebUI search finished: %d hits", len(results))
-    return _render_results(results, album_url(parse_order_id(url.strip())))
+    return (_render_results(results, album_url(parse_order_id(url.strip()))),
+            results)
 
 
-def _load_uploaded_image(path):
-    """Read an uploaded image file into a numpy array (RGB)."""
-    try:
-        img = cv2.imdecode(np.fromfile(str(path), dtype=np.uint8),
-                           cv2.IMREAD_COLOR)
-        if img is None:
-            return None
-        return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    except Exception as exc:
-        logger.warning("Failed to read uploaded reference image %s: %s", path, exc)
-        return None
+def cancel_search():
+    _cancel_event.set()
 
 
-def _add_references(current, webcam, uploads):
-    """Append webcam snapshot and/or uploaded files to the reference list."""
-    refs = list(current) if current else []
-    if webcam is not None:
-        refs.append(webcam)
-    for f in (uploads or []):
-        if isinstance(f, (str, Path)):
-            img = _load_uploaded_image(f)
-        else:
-            # Gradio sometimes returns a file-like object
-            img = _load_uploaded_image(getattr(f, "name", f))
-        if img is not None:
-            refs.append(img)
-    return refs, refs
+# ── batch download ────────────────────────────────────────────────
+def download_all(results):
+    if not results:
+        raise gr.Error("没有可下载的结果，请先搜索")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+        for r in results:
+            try:
+                import requests as _req
+                resp = _req.get(r.full_url, timeout=120)
+                resp.raise_for_status()
+                zf.writestr(r.fname or f"{r.photo_id}.jpg", resp.content)
+            except Exception as exc:
+                logger.warning("Download failed for %s: %s", r.fname, exc)
+    buf.seek(0)
+    tmp = Path(tempfile.mkdtemp()) / "photofinder_results.zip"
+    tmp.write_bytes(buf.read())
+    return str(tmp)
 
 
-def _clear_references():
-    return [], []
+def _append_snapshot(gallery_value, snapshot):
+    """摄像头拍照/上传后自动追加到参考照片列表（不清空取景框，
+    避免编程式重置干扰 Gradio 前端的摄像头状态）。"""
+    if snapshot is None:
+        return gallery_value
+    items = list(gallery_value or [])
+    items.append((snapshot, None))
+    return items
+
+
+def _undo_last(gallery_value):
+    items = list(gallery_value or [])
+    if items:
+        items.pop()
+    return items
+
+
+def _clear_gallery():
+    return []
 
 
 def build_app() -> gr.Blocks:
@@ -352,20 +435,19 @@ def build_app() -> gr.Blocks:
                     info="已预填常用活动链接，可直接修改",
                     lines=1, max_lines=1,
                     placeholder="https://www.yipai360.com/…")
-                ref_state = gr.State(value=[])
+                gr.HTML("<p class='pf-hint'>在下方拍照或上传，照片自动加入列表，"
+                        "可反复添加多张；查找时取每张中最清晰的人脸</p>")
                 ref_gallery = gr.Gallery(
-                    label="已添加的参考照片（可多张）",
-                    type="numpy", columns=4, object_fit="cover", height=140)
+                    label="已添加的参考照片",
+                    type="numpy", columns=4, object_fit="cover",
+                    height=160, interactive=False)
+                quality_html = gr.HTML("")
+                ref_input = gr.Image(
+                    label="添加参考照片（拍照 / 上传）",
+                    sources=["webcam", "upload"], type="numpy", height=220)
                 with gr.Row():
-                    ref_webcam = gr.Image(
-                        label="摄像头拍照", sources=["webcam"], type="numpy",
-                        height=180)
-                    ref_upload = gr.File(
-                        label="上传更多参考照片", file_count="multiple",
-                        file_types=["image"], height=180)
-                with gr.Row():
-                    add_btn = gr.Button("添加参考照片")
-                    clear_btn = gr.Button("清空参考照片")
+                    undo_btn = gr.Button("↩ 撤销最后一张", size="sm")
+                    clear_btn = gr.Button("✕ 清空全部", size="sm")
                 with gr.Accordion("高级选项", open=False):
                     threshold = gr.Slider(
                         0.3, 0.8, value=DEFAULT_THRESHOLD, step=0.01,
@@ -374,21 +456,36 @@ def build_app() -> gr.Blocks:
                         value=0, precision=0,
                         label="最多处理照片数 (0 = 全部)")
                     pwd = gr.Textbox(label="相册密码 (如有)")
-                btn = gr.Button("开始查找", variant="primary", size="lg",
-                                elem_classes=["pf-run-btn"])
+                    exclude_text = gr.Textbox(
+                        label="排除的照片 ID (逗号分隔，误命中时填写)")
+                    incremental = gr.Checkbox(
+                        label="仅拉取新增照片 (活动进行中时勾选)", value=False)
+                with gr.Row():
+                    btn = gr.Button("开始查找", variant="primary", size="lg",
+                                    elem_classes=["pf-run-btn"], scale=3)
+                    cancel_btn = gr.Button("✕ 取消", size="lg", scale=1)
             with gr.Column(scale=8, elem_classes=["pf-panel"]):
                 gr.HTML("<p class='pf-panel-title'>"
                         "<span class='pf-step-no'>2</span>查找结果</p>")
                 out = gr.HTML(WELCOME_HTML)
-        add_btn.click(
-            _add_references,
-            [ref_state, ref_webcam, ref_upload],
-            [ref_state, ref_gallery])
-        clear_btn.click(
-            _clear_references,
-            [],
-            [ref_state, ref_gallery])
-        btn.click(run_search, [url, ref_state, threshold, max_photos, pwd], out)
+                with gr.Row():
+                    download_btn = gr.Button("📦 打包下载全部命中照片",
+                                             size="sm")
+                download_file = gr.File(visible=False)
+        results_state = gr.State(value=[])
+
+        # ── events ──
+        ref_input.change(_append_snapshot,
+                         [ref_gallery, ref_input], [ref_gallery])
+        ref_gallery.change(check_quality, [ref_gallery], [quality_html])
+        undo_btn.click(_undo_last, [ref_gallery], [ref_gallery])
+        clear_btn.click(_clear_gallery, [], [ref_gallery])
+        btn.click(run_search,
+                  [url, ref_gallery, threshold, max_photos, pwd,
+                   exclude_text, incremental],
+                  [out, results_state])
+        cancel_btn.click(cancel_search, [], [])
+        download_btn.click(download_all, [results_state], [download_file])
     return app
 
 

@@ -87,8 +87,10 @@ def test_extract_reference_returns_largest_face_embedding():
     finder._engine = FakeEngine()
     img = np.zeros((100, 100, 3), dtype=np.uint8)
 
-    embs = finder.extract_reference(img)
+    embs, qualities = finder.extract_reference(img)
     assert len(embs) == 1
+    assert len(qualities) == 1
+    assert qualities[0].used is True
     np.testing.assert_array_equal(embs[0], np.ones(512, dtype=np.float32) * 0.5)
 
 
@@ -98,7 +100,7 @@ def test_extract_reference_from_file_path(tmp_path: Path):
 
     finder = PhotoFinder(cache_root=tmp_path)
     finder._engine = FakeEngine()
-    embs = finder.extract_reference(ref_path)
+    embs, qualities = finder.extract_reference(ref_path)
     assert len(embs) == 1
 
 
@@ -108,8 +110,9 @@ def test_extract_reference_accepts_multiple_images():
     img1 = np.zeros((100, 100, 3), dtype=np.uint8)
     img2 = np.ones((100, 100, 3), dtype=np.uint8)
 
-    embs = finder.extract_reference([img1, img2])
+    embs, qualities = finder.extract_reference([img1, img2])
     assert len(embs) == 2
+    assert len(qualities) == 2
     # each image contributes the largest face embedding
     np.testing.assert_array_equal(embs[0], np.ones(512, dtype=np.float32) * 0.5)
 

@@ -18,6 +18,19 @@ from .logger import get_logger, setup_logging
 setup_logging()
 logger = get_logger(__name__)
 
+
+def _default_providers() -> list[str]:
+    """Auto-detect the best available ONNX execution provider."""
+    try:
+        available = ort.get_available_providers()
+    except AttributeError:
+        return ["CPUExecutionProvider"]
+    if "CUDAExecutionProvider" in available:
+        return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    if "DmlExecutionProvider" in available:
+        return ["DmlExecutionProvider", "CPUExecutionProvider"]
+    return ["CPUExecutionProvider"]
+
 # ArcFace reference landmarks for 112x112 alignment
 ARCFACE_DST = np.array(
     [[38.2946, 51.6963], [73.5318, 51.5014], [56.0252, 71.7366],
@@ -74,7 +87,7 @@ class SCRFD:
         self._num_anchors = 2
         self.session = ort.InferenceSession(
             str(model_path),
-            providers=providers or ["CPUExecutionProvider"])
+            providers=providers or _default_providers())
         self.input_name = self.session.get_inputs()[0].name
         out_names = [o.name for o in self.session.get_outputs()]
         self.output_names = out_names  # score_8/16/32, bbox_*, kps_*
@@ -162,20 +175,36 @@ class ArcFace:
     def __init__(self, model_path: str | Path, providers=None):
         self.session = ort.InferenceSession(
             str(model_path),
-            providers=providers or ["CPUExecutionProvider"])
+            providers=providers or _default_providers())
         inp = self.session.get_inputs()[0]
         self.input_name = inp.name
         self.input_size = tuple(inp.shape[2:4][::-1])  # (112, 112)
 
-    def get(self, img: np.ndarray, kps: np.ndarray) -> np.ndarray:
+    def _align(self, img: np.ndarray, kps: np.ndarray) -> np.ndarray:
         kps = np.asarray(kps, dtype=np.float32).reshape(5, 2)
         M, _ = cv2.estimateAffinePartial2D(
             kps, ARCFACE_DST, method=cv2.LMEDS)
-        aligned = cv2.warpAffine(img, M, self.input_size, borderValue=0.0)
+        return cv2.warpAffine(img, M, self.input_size, borderValue=0.0)
+
+    def get(self, img: np.ndarray, kps: np.ndarray) -> np.ndarray:
+        aligned = self._align(img, kps)
         blob = cv2.dnn.blobFromImage(aligned, 1.0 / 127.5, self.input_size,
                                      (127.5, 127.5, 127.5), swapRB=True)
         emb = self.session.run(None, {self.input_name: blob})[0][0]
         return emb / np.linalg.norm(emb)
+
+    def get_batch(self, img: np.ndarray,
+                  kpss_list: list[np.ndarray]) -> list[np.ndarray]:
+        """Compute normalized embeddings for multiple faces in one ONNX call."""
+        if not kpss_list:
+            return []
+        aligned = [self._align(img, kps) for kps in kpss_list]
+        blob = cv2.dnn.blobFromImages(aligned, 1.0 / 127.5, self.input_size,
+                                      (127.5, 127.5, 127.5), swapRB=True)
+        embs = self.session.run(None, {self.input_name: blob})[0]
+        norms = np.linalg.norm(embs, axis=1, keepdims=True)
+        norms = np.where(norms == 0, 1.0, norms)
+        return list(embs / norms)
 
 
 class FaceEngine:
@@ -195,12 +224,22 @@ class FaceEngine:
         except Exception as exc:
             logger.warning("Face detection failed: %s", exc)
             return []
+        if len(bboxes) == 0:
+            return []
+        try:
+            embs = self.rec.get_batch(img, list(kpss))
+        except Exception:
+            # Fallback: some ONNX exports have fixed batch=1
+            embs = []
+            for kps in kpss:
+                try:
+                    embs.append(self.rec.get(img, kps))
+                except Exception as exc:
+                    logger.warning("Face recognition failed: %s", exc)
+                    embs.append(None)
         faces = []
-        for box, kps in zip(bboxes, kpss):
-            try:
-                emb = self.rec.get(img, kps)
-            except Exception as exc:
-                logger.warning("Face recognition failed for a detected face: %s", exc)
+        for box, emb in zip(bboxes, embs):
+            if emb is None:
                 continue
             faces.append({
                 "bbox": box[:4].astype(float).tolist(),

@@ -28,7 +28,6 @@ dependencies = [
     "opencv-python-headless>=4.9",
     "numpy>=1.26",
     "requests>=2.31",
-    "tqdm>=4.66",
     "gradio>=4.0",
 ]
 
@@ -36,6 +35,9 @@ dependencies = [
 dev = [
     "pytest>=7.0",
     "ruff>=0.4.0",
+]
+fast = [
+    "faiss-cpu>=1.7",
 ]
 
 [project.scripts]
