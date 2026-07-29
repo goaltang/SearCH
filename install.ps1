@@ -25,10 +25,10 @@ if (-not (Test-Path $venvDir)) {
     Write-Host "Virtual environment already exists, skipping creation."
 }
 
-# Upgrade pip and install the project
+# Upgrade pip and install the project (dev+fast extras match the Docker image)
 Write-Host "Installing dependencies..."
 & $pythonExe -m pip install --upgrade pip
-& $pythonExe -m pip install -e $projectRoot
+& $pythonExe -m pip install -e "$projectRoot[dev,fast]"
 
 # Download models if missing
 $detModel = Join-Path $projectRoot "models\det_10g.onnx"
