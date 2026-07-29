@@ -510,8 +510,8 @@ def build_app() -> gr.Blocks:
                     height=160, interactive=False)
                 quality_html = gr.HTML("")
                 ref_input = gr.Image(
-                    label="添加参考照片（拍照 / 上传）",
-                    sources=["webcam", "upload"], type="numpy", height=220)
+                    label="添加参考照片（上传）",
+                    sources=["upload"], type="numpy", height=220)
                 with gr.Row():
                     undo_btn = gr.Button("↩ 撤销最后一张", size="sm")
                     clear_btn = gr.Button("✕ 清空全部", size="sm")
