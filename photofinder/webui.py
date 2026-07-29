@@ -502,8 +502,8 @@ def download_all(results):
 
 
 def _append_snapshot(gallery_value, snapshot):
-    """摄像头拍照/上传后自动追加到参考照片列表（不清空取景框，
-    避免编程式重置干扰 Gradio 前端的摄像头状态）。"""
+    """上传后自动追加到参考照片列表（不清空上传组件，
+    避免编程式重置干扰 Gradio 前端状态）。"""
     if snapshot is None:
         return gallery_value
     items = list(gallery_value or [])

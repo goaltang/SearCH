@@ -55,6 +55,10 @@ tags:
 | 17 | CLI JSON 输出 | ✅ | `--json` 结构化输出 |
 | 18 | 密码安全传递 | ✅ | 从 URL query 改到 HTTP header |
 | 19 | 使用手册 | ✅ | [[PhotoFinder 使用手册]] |
+| 20 | Docker 部署支持 | ✅ | `Dockerfile` + `docker-compose.yml` + `DEPLOY.md` + `deploy/nginx.conf` |
+| 21 | 多用户并发加固 | ✅ | 访问码、并发上限、打包下载上限、ORT 线程数限制 |
+| 22 | 移动端适配 | ✅ | 窄屏两栏堆叠、结果两列流式网格、iOS 输入框防缩放 |
+| 23 | 线上部署 | ✅ | 阿里云 2核4G（香港免备案），docker compose + 直接 IP:7860 访问 |
 
 ## 3. 关键文件清单
 
@@ -70,10 +74,15 @@ SearCH/
 │   └── index.py          # 人脸索引与检索
 ├── models/               # ONNX 模型（*.onnx 被 gitignore 忽略）
 │   └── .gitkeep
+├── tests/                # 单元测试
 ├── README.md             # 完整文档
+├── DEPLOY.md             # 部署指南（Docker/Nginx/运维）
 ├── LICENSE               # MIT 许可证
 ├── requirements.txt      # 依赖
 ├── pyproject.toml        # 现代 Python 包配置
+├── Dockerfile            # 容器镜像
+├── docker-compose.yml    # 一键部署（含资源限制）
+├── deploy/               # Nginx 配置（可选 HTTPS 方案）
 ├── install.ps1           # 一键安装
 ├── start-webui.ps1       # 启动 Web UI
 ├── start-webui.bat       # 双击启动 Web UI
@@ -140,7 +149,7 @@ LICENSE
 # 或双击 start-webui.bat
 ```
 
-拍照/上传参考照片 → 开始查找 → 查看结果（绿框标注人脸）→ 打包下载 zip。
+上传参考照片（手机浏览器可直接拍照）→ 开始查找 → 查看结果（绿框标注人脸）→ 打包下载 zip。
 
 ### CLI
 
@@ -197,6 +206,8 @@ cache/{orderId}/
 - [x] 误命中排除 + 增量拉取
 - [x] CLI JSON 输出 + 密码安全传递
 - [x] 使用手册
+- [x] Docker 化部署 + DEPLOY.md 部署指南
+- [x] 多用户并发加固 + 移动端适配
 - [ ] 评估是否支持其他相册平台
 
 ---

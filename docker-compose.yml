@@ -4,7 +4,8 @@
 #   docker compose up -d --build
 #
 # deploy.resources.limits 在 docker compose v2 下会生效：
-# 限制容器最多用 3.5 核 / 6G 内存，防止单个容器把整台服务器拖垮。
+# 限制容器最多用 1.5 核 / 3G 内存（按 2核4G 服务器调校），
+# 防止单个容器把整台服务器拖垮。
 
 services:
   photofinder:
