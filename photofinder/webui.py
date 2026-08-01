@@ -68,15 +68,17 @@ THEME = _force_light_theme(gr.themes.Soft(
 
 CSS = """
 :root {
-  --pf-primary: #6366f1;
-  --pf-primary-dark: #4f46e5;
-  --pf-border: #e6e8f0;
+  --pf-primary: #0d9488;
+  --pf-primary-dark: #0f766e;
+  --pf-accent: #f59e0b;
+  --pf-accent-dark: #d97706;
+  --pf-border: #e2e8f0;
   --pf-text: #1e293b;
   --pf-muted: #64748b;
 }
 
 body, .gradio-container {
-  background: linear-gradient(180deg, #eceeff 0%, #f6f7ff 320px, #f8fafc 100%) !important;
+  background: linear-gradient(180deg, #f0fdfa 0%, #f8fafc 320px, #fafafa 100%) !important;
 }
 .gradio-container {
   max-width: 1240px !important;
@@ -89,21 +91,20 @@ body, .gradio-container {
 .pf-hero { padding: 4px 6px 18px; }
 .pf-hero-row { display: flex; align-items: center; gap: 16px; }
 .pf-logo {
-  width: 56px; height: 56px; border-radius: 16px; flex: none;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  width: 56px; height: 56px; border-radius: 14px; flex: none;
+  background: var(--pf-primary);
   display: flex; align-items: center; justify-content: center;
-  box-shadow: 0 8px 20px rgba(99, 102, 241, .35);
+  box-shadow: 0 6px 16px rgba(13, 148, 136, .3);
 }
 .pf-title {
-  margin: 0; font-size: 30px; font-weight: 800; letter-spacing: .5px;
-  background: linear-gradient(90deg, #312e81, #6d28d9);
-  -webkit-background-clip: text; background-clip: text; color: transparent;
+  margin: 0; font-size: 30px; font-weight: 800; letter-spacing: 1px;
+  color: var(--pf-text);
 }
 .pf-sub { margin: 4px 0 0; color: var(--pf-muted); font-size: 14px; line-height: 1.7; }
 .pf-badges { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
 .pf-badge {
   font-size: 12px; padding: 4px 12px; border-radius: 999px;
-  background: #eef2ff; color: #4338ca; border: 1px solid #e0e7ff;
+  background: #f0fdfa; color: var(--pf-primary-dark); border: 1px solid #ccfbf1;
 }
 .pf-badge--green { background: #ecfdf5; color: #047857; border-color: #d1fae5; }
 
@@ -117,8 +118,8 @@ body, .gradio-container {
   display: flex; align-items: center; gap: 8px;
 }
 .pf-panel-title .pf-step-no {
-  width: 22px; height: 22px; border-radius: 8px; flex: none;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6); color: #fff;
+  width: 22px; height: 22px; border-radius: 6px; flex: none;
+  background: var(--pf-primary); color: #fff;
   font-size: 12px; font-weight: 700;
   display: inline-flex; align-items: center; justify-content: center;
 }
@@ -129,15 +130,21 @@ body, .gradio-container {
 
 /* ---------- Run button ---------- */
 .pf-run-btn button {
-  background: linear-gradient(90deg, #6366f1, #8b5cf6) !important;
+  background: linear-gradient(90deg, var(--pf-accent), var(--pf-accent-dark)) !important;
   border: none !important; border-radius: 12px !important;
   font-size: 16px !important; font-weight: 700 !important; letter-spacing: 2px;
-  box-shadow: 0 6px 16px rgba(99, 102, 241, .35);
-  transition: transform .15s ease, box-shadow .15s ease;
+  color: #fff !important;
+  box-shadow: 0 4px 14px rgba(245, 158, 11, .35);
+  transition: transform .12s ease, box-shadow .12s ease;
+  min-height: 48px !important;
 }
 .pf-run-btn button:hover {
   transform: translateY(-1px);
-  box-shadow: 0 10px 24px rgba(99, 102, 241, .45);
+  box-shadow: 0 8px 20px rgba(245, 158, 11, .45);
+}
+.pf-run-btn button:active {
+  transform: scale(.97);
+  box-shadow: 0 2px 8px rgba(245, 158, 11, .3);
 }
 
 /* ---------- Welcome / empty states ---------- */
@@ -153,7 +160,7 @@ body, .gradio-container {
 }
 .pf-step {
   display: flex; align-items: center; gap: 10px;
-  background: #f6f7ff; border: 1px solid #eef2ff; border-radius: 10px;
+  background: #f0fdfa; border: 1px solid #ccfbf1; border-radius: 10px;
   padding: 10px 14px; font-size: 13px; color: #475569;
 }
 .pf-step span {
@@ -169,7 +176,7 @@ body, .gradio-container {
   padding: 2px 2px 16px; font-size: 14px; color: #475569;
 }
 .pf-count {
-  background: linear-gradient(90deg, #6366f1, #8b5cf6); color: #fff;
+  background: var(--pf-primary); color: #fff;
   font-weight: 700; font-size: 13px; border-radius: 999px; padding: 4px 14px;
 }
 .pf-open-album {
@@ -217,7 +224,7 @@ body, .gradio-container {
 }
 .pf-album-tag {
   font-size: 13px; font-weight: 700; color: #fff;
-  background: linear-gradient(90deg, #6366f1, #8b5cf6);
+  background: var(--pf-primary);
   padding: 4px 14px; border-radius: 999px;
 }
 .pf-album-count { font-size: 13px; color: var(--pf-muted); }
@@ -234,18 +241,19 @@ body, .gradio-container {
   margin: 0 0 10px; font-size: 13px; color: var(--pf-muted);
   display: flex; align-items: center; gap: 6px; line-height: 1.5;
 }
+.pf-albums-label svg { flex: none; vertical-align: middle; }
 .pf-albums-label b { color: var(--pf-primary-dark); font-weight: 800; }
 .pf-chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .pf-chip {
   display: inline-flex; align-items: center; gap: 7px;
   padding: 7px 15px 7px 10px; border-radius: 999px;
-  background: #eef2ff; color: #4338ca; border: 1px solid #e0e7ff;
+  background: #f0fdfa; color: var(--pf-primary-dark); border: 1px solid #ccfbf1;
   font-size: 13px; font-weight: 600; letter-spacing: .2px;
-  transition: transform .15s ease, background .15s ease, box-shadow .15s ease;
+  transition: transform .12s ease, background .12s ease, box-shadow .12s ease;
 }
 .pf-chip:hover {
-  transform: translateY(-1px); background: #e0e7ff;
-  box-shadow: 0 5px 14px rgba(99, 102, 241, .2);
+  transform: translateY(-1px); background: #ccfbf1;
+  box-shadow: 0 4px 12px rgba(13, 148, 136, .15);
 }
 .pf-chip svg { flex: none; display: block; }
 .pf-chip-text { white-space: nowrap; }
@@ -253,6 +261,53 @@ body, .gradio-container {
   margin: 0; font-size: 13px; color: #b45309; line-height: 1.6;
   background: #fffbeb; border: 1px dashed #fcd34d;
   border-radius: 10px; padding: 10px 12px;
+}
+
+/* ---------- Upload prompt (visual anchor above the drop zone) ---------- */
+.pf-upload-prompt {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 16px; margin-bottom: 6px;
+  background: linear-gradient(135deg, #f0fdfa 0%, #ccfbf1 100%);
+  border: 1px solid #99f6e4; border-radius: 12px;
+  animation: pf-glow 2.8s ease-in-out infinite;
+}
+@keyframes pf-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(13, 148, 136, .12); }
+  50% { box-shadow: 0 0 0 8px rgba(13, 148, 136, .06); }
+}
+.pf-upload-prompt-text { font-size: 14px; color: var(--pf-primary-dark); line-height: 1.6; }
+.pf-upload-prompt-text strong { font-weight: 700; font-size: 15px; }
+.pf-upload-prompt-text span { font-size: 12px; color: var(--pf-primary); }
+
+/* ---------- Upload zone (Gradio Image component wrapper) ---------- */
+.pf-upload-zone { margin-bottom: 2px; }
+.pf-upload-zone .wrap,
+.pf-upload-zone > div:first-child {
+  border: 2px dashed #99f6e4 !important;
+  border-radius: 14px !important;
+  background: #f0fdfa !important;
+  min-height: 140px !important;
+  transition: border-color .2s ease, background .2s ease;
+}
+.pf-upload-zone .wrap:hover,
+.pf-upload-zone > div:first-child:hover {
+  border-color: #5eead4 !important;
+  background: #ccfbf1 !important;
+}
+
+/* ---------- Loading spinner ---------- */
+.pf-spinner {
+  width: 36px; height: 36px; margin: 0 auto 10px;
+  border: 3px solid #ccfbf1; border-top-color: var(--pf-primary);
+  border-radius: 50%;
+  animation: pf-spin .7s linear infinite;
+}
+@keyframes pf-spin { to { transform: rotate(360deg); } }
+
+/* ---------- Button press feedback (all buttons) ---------- */
+.gradio-container button:active {
+  transform: scale(.97) !important;
+  transition: transform .1s ease !important;
 }
 
 /* ---------- Mobile ---------- */
@@ -295,7 +350,7 @@ _SVG_SEARCH = ("<svg viewBox='0 0 24 24' width='28' height='28' fill='none' "
                "<circle cx='11' cy='11' r='7'/><path d='m20 20-3.5-3.5'/></svg>")
 
 _SVG_PHOTO = ("<svg viewBox='0 0 24 24' width='52' height='52' fill='none' "
-              "stroke='#a5b4fc' stroke-width='1.6' stroke-linecap='round' "
+              "stroke='#5eead4' stroke-width='1.6' stroke-linecap='round' "
               "stroke-linejoin='round'><rect x='3' y='3' width='18' height='18' "
               "rx='3'/><circle cx='9' cy='9' r='2'/><path d='m21 15-4.5-4.5L6 21'/></svg>")
 
@@ -305,10 +360,27 @@ _SVG_NO_RESULT = ("<svg viewBox='0 0 24 24' width='52' height='52' fill='none' "
                   "<path d='M8.5 8.5l5 5M13.5 8.5l-5 5'/></svg>")
 
 _SVG_CHECK = ("<svg viewBox='0 0 24 24' width='16' height='16'>"
-              "<circle cx='12' cy='12' r='10' fill='#c7d2fe'/>"
-              "<path d='M7.5 12.2l3 3 6-6.4' fill='none' stroke='#3730a3' "
+              "<circle cx='12' cy='12' r='10' fill='#99f6e4'/>"
+              "<path d='M7.5 12.2l3 3 6-6.4' fill='none' stroke='#0f766e' "
               "stroke-width='2.4' stroke-linecap='round' "
               "stroke-linejoin='round'/></svg>")
+
+_SVG_CAMERA = ("<svg viewBox='0 0 24 24' width='32' height='32' fill='none' "
+               "stroke='#0d9488' stroke-width='1.8' stroke-linecap='round' "
+               "stroke-linejoin='round'>"
+               "<path d='M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 "
+               "2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z'/>"
+               "<circle cx='12' cy='13' r='4'/></svg>")
+
+UPLOAD_PROMPT_HTML = f"""
+<div class="pf-upload-prompt">
+  {_SVG_CAMERA}
+  <div class="pf-upload-prompt-text">
+    <strong>上传你的正脸照</strong><br/>
+    <span>光线充足、尽量单人，可添加多张</span>
+  </div>
+</div>
+"""
 
 HEADER_HTML = f"""
 <div class="pf-hero">
@@ -335,8 +407,8 @@ WELCOME_HTML = f"""
   <h3>查找结果将在这里展示</h3>
   <p>命中照片会以卡片墙形式呈现，包含预览图、相似度和原图链接。</p>
   <div class="pf-steps">
-    <div class="pf-step"><span>1</span>确认上方要查找的相册</div>
-    <div class="pf-step"><span>2</span>上传你的正脸照片（清晰、单人）</div>
+    <div class="pf-step"><span>1</span>上传你的正脸照片（清晰、单人）</div>
+    <div class="pf-step"><span>2</span>确认要查找的相册（已自动配置）</div>
     <div class="pf-step"><span>3</span>点击「开始查找」</div>
   </div>
 </div>
@@ -351,13 +423,18 @@ EMPTY_HTML = f"""
 """
 
 LOADING_HTML = """
-<div class="pf-empty" style="border-style:solid;border-color:#e0e7ff;">
-  <div style="font-size:36px;margin-bottom:8px;">⏳</div>
+<div class="pf-empty" style="border-style:solid;border-color:#ccfbf1;">
+  <div class="pf-spinner"></div>
   <h3>正在查找中…</h3>
   <p>首次搜索需要下载照片并建立索引，请耐心等待。<br/>
      再次搜索同一相册会快很多。</p>
 </div>
 """
+
+
+_SVG_SEARCH_SM = ("<svg viewBox='0 0 24 24' width='14' height='14' fill='none' "
+                  "stroke='currentColor' stroke-width='2.4' stroke-linecap='round'>"
+                  "<circle cx='11' cy='11' r='7'/><path d='m20 20-3.5-3.5'/></svg>")
 
 
 def _render_album_chips(url_text: str) -> str:
@@ -373,7 +450,7 @@ def _render_album_chips(url_text: str) -> str:
         albums = []
     if not albums:
         return ("<div class='pf-albums'><p class='pf-albums-label'>"
-                "🔍 将查找的相册</p>"
+                f"{_SVG_SEARCH_SM} 将查找的相册</p>"
                 "<p class='pf-albums-empty'>还没识别到相册链接 —— 展开下方"
                 "「高级选项」，在「自定义相册链接」里粘贴链接（每行一个）。</p></div>")
     chips = "".join(
@@ -381,7 +458,7 @@ def _render_album_chips(url_text: str) -> str:
         f"<span class='pf-chip-text'>{html.escape(a['label'])}</span></span>"
         for a in albums)
     return (f"<div class='pf-albums'><p class='pf-albums-label'>"
-            f"🔍 将在以下 <b>{len(albums)}</b> 个相册中查找你</p>"
+            f"{_SVG_SEARCH_SM} 将在以下 <b>{len(albums)}</b> 个相册中查找你</p>"
             f"<div class='pf-chips'>{chips}</div></div>")
 
 
@@ -661,20 +738,24 @@ def build_app() -> gr.Blocks:
             with gr.Column(scale=4, elem_classes=["pf-panel"]):
                 gr.HTML("<p class='pf-panel-title'>"
                         "<span class='pf-step-no'>1</span>上传你的正脸照片</p>")
-                album_chips_html = gr.HTML(_render_album_chips(DEFAULT_ALBUM_URL))
-                gr.HTML("<p class='pf-hint'>上传一张清晰的正脸照（光线充足、尽量单人），"
-                        "可反复添加多张，查找时取每张中最清晰的人脸。</p>")
+                # ── Upload prompt + drop zone: the PRIMARY action, first ──
+                gr.HTML(UPLOAD_PROMPT_HTML)
+                ref_input = gr.Image(
+                    label="添加参考照片",
+                    sources=["upload"], type="numpy", height=200,
+                    elem_classes=["pf-upload-zone"], show_label=False)
+                # ── Gallery: shows what was already added ──
                 ref_gallery = gr.Gallery(
                     label="已添加的参考照片",
                     type="numpy", columns=4, object_fit="cover",
-                    height=160, interactive=False)
+                    height=120, interactive=False)
                 quality_html = gr.HTML("")
-                ref_input = gr.Image(
-                    label="添加参考照片（上传）",
-                    sources=["upload"], type="numpy", height=220)
                 with gr.Row():
                     undo_btn = gr.Button("↩ 撤销最后一张", size="sm")
                     clear_btn = gr.Button("✕ 清空全部", size="sm")
+                # ── Album chips: informational, secondary ──
+                album_chips_html = gr.HTML(
+                    _render_album_chips(DEFAULT_ALBUM_URL))
                 with gr.Accordion("高级选项（自定义相册 / 调参）", open=False):
                     url = gr.Textbox(
                         label="自定义相册链接（每行一个：标签 链接，标签可省略）",
@@ -702,7 +783,7 @@ def build_app() -> gr.Blocks:
                         "<span class='pf-step-no'>2</span>查找结果</p>")
                 out = gr.HTML(WELCOME_HTML)
                 with gr.Row():
-                    download_btn = gr.Button("📦 打包下载全部命中照片",
+                    download_btn = gr.Button("↓ 打包下载全部命中照片",
                                              size="sm", visible=False)
                 download_file = gr.File(label="打包结果", visible=False)
         results_state = gr.State(value=[])
