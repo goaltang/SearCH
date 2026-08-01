@@ -18,6 +18,7 @@ import numpy as np
 
 from .logger import get_logger, setup_logging
 from .pipeline import DEFAULT_THRESHOLD, PhotoFinder, SearchCancelled
+from .crawler import parse_albums
 
 setup_logging()
 logger = get_logger(__name__)
@@ -227,6 +228,33 @@ body, .gradio-container {
   padding: 2px 8px; border-radius: 999px;
 }
 
+/* ---------- Album chips (end-user read-only summary) ---------- */
+.pf-albums { margin: 2px 0 18px; }
+.pf-albums-label {
+  margin: 0 0 10px; font-size: 13px; color: var(--pf-muted);
+  display: flex; align-items: center; gap: 6px; line-height: 1.5;
+}
+.pf-albums-label b { color: var(--pf-primary-dark); font-weight: 800; }
+.pf-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.pf-chip {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 7px 15px 7px 10px; border-radius: 999px;
+  background: #eef2ff; color: #4338ca; border: 1px solid #e0e7ff;
+  font-size: 13px; font-weight: 600; letter-spacing: .2px;
+  transition: transform .15s ease, background .15s ease, box-shadow .15s ease;
+}
+.pf-chip:hover {
+  transform: translateY(-1px); background: #e0e7ff;
+  box-shadow: 0 5px 14px rgba(99, 102, 241, .2);
+}
+.pf-chip svg { flex: none; display: block; }
+.pf-chip-text { white-space: nowrap; }
+.pf-albums-empty {
+  margin: 0; font-size: 13px; color: #b45309; line-height: 1.6;
+  background: #fffbeb; border: 1px dashed #fcd34d;
+  border-radius: 10px; padding: 10px 12px;
+}
+
 /* ---------- Mobile ---------- */
 @media (max-width: 768px) {
   .gradio-container { padding-top: 12px !important; }
@@ -276,14 +304,20 @@ _SVG_NO_RESULT = ("<svg viewBox='0 0 24 24' width='52' height='52' fill='none' "
                   "<circle cx='11' cy='11' r='7'/><path d='m20 20-3.5-3.5'/>"
                   "<path d='M8.5 8.5l5 5M13.5 8.5l-5 5'/></svg>")
 
+_SVG_CHECK = ("<svg viewBox='0 0 24 24' width='16' height='16'>"
+              "<circle cx='12' cy='12' r='10' fill='#c7d2fe'/>"
+              "<path d='M7.5 12.2l3 3 6-6.4' fill='none' stroke='#3730a3' "
+              "stroke-width='2.4' stroke-linecap='round' "
+              "stroke-linejoin='round'/></svg>")
+
 HEADER_HTML = f"""
 <div class="pf-hero">
   <div class="pf-hero-row">
     <div class="pf-logo">{_SVG_SEARCH}</div>
     <div>
       <h1 class="pf-title">找找小禾</h1>
-      <p class="pf-sub">粘贴 <b>一拍即传 (yipai360)</b> 活动相册链接，上传一张参考人脸照片，
-        自动在全部活动照片中找出你出现的所有瞬间。</p>
+      <p class="pf-sub">上传一张你的<b>正脸照片</b>，AI 会在全部活动相册里
+        自动找出你出现的每一个瞬间。</p>
     </div>
   </div>
   <div class="pf-badges">
@@ -301,8 +335,8 @@ WELCOME_HTML = f"""
   <h3>查找结果将在这里展示</h3>
   <p>命中照片会以卡片墙形式呈现，包含预览图、相似度和原图链接。</p>
   <div class="pf-steps">
-    <div class="pf-step"><span>1</span>粘贴活动相册链接</div>
-    <div class="pf-step"><span>2</span>上传参考照片（正脸、清晰）</div>
+    <div class="pf-step"><span>1</span>确认上方要查找的相册</div>
+    <div class="pf-step"><span>2</span>上传你的正脸照片（清晰、单人）</div>
     <div class="pf-step"><span>3</span>点击「开始查找」</div>
   </div>
 </div>
@@ -324,6 +358,31 @@ LOADING_HTML = """
      再次搜索同一相册会快很多。</p>
 </div>
 """
+
+
+def _render_album_chips(url_text: str) -> str:
+    """Read-only, end-user-friendly summary of the albums to be searched.
+
+    The editable multi-line URL box lives in the advanced section (operator
+    use); this renders its parsed result as clean chips so end users never see
+    raw URLs. It updates live whenever the operator edits that box.
+    """
+    try:
+        albums = parse_albums(url_text or "")
+    except ValueError:
+        albums = []
+    if not albums:
+        return ("<div class='pf-albums'><p class='pf-albums-label'>"
+                "🔍 将查找的相册</p>"
+                "<p class='pf-albums-empty'>还没识别到相册链接 —— 展开下方"
+                "「高级选项」，在「自定义相册链接」里粘贴链接（每行一个）。</p></div>")
+    chips = "".join(
+        f"<span class='pf-chip'>{_SVG_CHECK}"
+        f"<span class='pf-chip-text'>{html.escape(a['label'])}</span></span>"
+        for a in albums)
+    return (f"<div class='pf-albums'><p class='pf-albums-label'>"
+            f"🔍 将在以下 <b>{len(albums)}</b> 个相册中查找你</p>"
+            f"<div class='pf-chips'>{chips}</div></div>")
 
 
 def _score_class(score: float) -> str:
@@ -445,8 +504,7 @@ def run_search(url, gallery_value, threshold, max_photos, pwd,
                exclude_text, incremental, cancel_state,
                progress=gr.Progress()):
     if not url or not url.strip():
-        raise gr.Error("请输入活动相册链接")
-    from .crawler import parse_albums
+        raise gr.Error("没有可查找的相册链接，请在「高级选项」中填写")
     try:
         albums = parse_albums(url)
     except ValueError as e:
@@ -602,15 +660,10 @@ def build_app() -> gr.Blocks:
         with gr.Row(equal_height=False, elem_classes=["pf-main-row"]):
             with gr.Column(scale=4, elem_classes=["pf-panel"]):
                 gr.HTML("<p class='pf-panel-title'>"
-                        "<span class='pf-step-no'>1</span>设置查找条件</p>")
-                url = gr.Textbox(
-                    label="活动相册链接（每行一个，可一次查多个相册）",
-                    value=DEFAULT_ALBUM_URL,
-                    info="已预填省赛+国赛两个相册，会一起检索；格式「标签 链接」，标签可省略",
-                    lines=2, max_lines=4,
-                    placeholder="省赛 https://www.yipai360.com/…\n国赛 https://www.yipai360.com/…")
-                gr.HTML("<p class='pf-hint'>在下方上传参考照片（正脸、光线充足效果最佳），"
-                        "自动加入列表，可反复添加多张；查找时取每张中最清晰的人脸</p>")
+                        "<span class='pf-step-no'>1</span>上传你的正脸照片</p>")
+                album_chips_html = gr.HTML(_render_album_chips(DEFAULT_ALBUM_URL))
+                gr.HTML("<p class='pf-hint'>上传一张清晰的正脸照（光线充足、尽量单人），"
+                        "可反复添加多张，查找时取每张中最清晰的人脸。</p>")
                 ref_gallery = gr.Gallery(
                     label="已添加的参考照片",
                     type="numpy", columns=4, object_fit="cover",
@@ -622,7 +675,13 @@ def build_app() -> gr.Blocks:
                 with gr.Row():
                     undo_btn = gr.Button("↩ 撤销最后一张", size="sm")
                     clear_btn = gr.Button("✕ 清空全部", size="sm")
-                with gr.Accordion("高级选项", open=False):
+                with gr.Accordion("高级选项（自定义相册 / 调参）", open=False):
+                    url = gr.Textbox(
+                        label="自定义相册链接（每行一个：标签 链接，标签可省略）",
+                        value=DEFAULT_ALBUM_URL,
+                        info="修改后上方相册标签会实时更新；终端用户通常无需改动。",
+                        lines=2, max_lines=4,
+                        placeholder="省赛 https://www.yipai360.com/…\n国赛 https://www.yipai360.com/…")
                     threshold = gr.Slider(
                         0.3, 0.8, value=DEFAULT_THRESHOLD, step=0.01,
                         label="相似度阈值 (越高越严格)")
@@ -650,6 +709,7 @@ def build_app() -> gr.Blocks:
         cancel_state = gr.State(value=None)
 
         # ── events ──
+        url.change(_render_album_chips, [url], [album_chips_html])
         ref_input.change(_append_snapshot,
                          [ref_gallery, ref_input], [ref_gallery])
         ref_gallery.change(check_quality, [ref_gallery], [quality_html])
