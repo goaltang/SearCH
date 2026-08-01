@@ -9,6 +9,11 @@ SearCH (photofinder) is an event-photo face-search tool. Given an album URL
 and a reference selfie, it finds every photo containing that person.
 Stack: Python 3.10+, ONNX Runtime, SCRFD + ArcFace models, Gradio Web UI.
 
+> **Helping with deployment, index building, or "updating photos"? Read
+> [OPS.md](OPS.md) and the "Operations & Index-Building Gotchas" section below
+> FIRST.** These tasks have non-obvious failure modes (e.g. a silently empty
+> index) that are easy to get wrong.
+
 ## Install (step by step)
 
 ```bash
@@ -105,6 +110,7 @@ models/             # ONNX model files (gitignored, ~300MB)
 | `PHOTOFINDER_DOWNLOAD_MAX` | `300` | Max photos per zip download |
 | `PHOTOFINDER_INDEX_CACHE` | `4` | LRU cache size for hot album indexes |
 | `PHOTOFINDER_DATA_DIR` | `cache/` | Where indexes and thumbnails are stored |
+| `PHOTOFINDER_FACE_BATCH` | `1` | Batched ArcFace recognition. **Set `0` for local index builds on Windows** (onnxruntime 1.28 batched inference crashes natively → silent 0-face index). Server/Docker keeps `1`. |
 
 ## Testing
 
@@ -137,6 +143,48 @@ Exception: `test_face_engine.py` integration tests need models in `models/`.
 - `face_engine.py:extract_embeddings()` handles batch input
 - Results are aggregated per-photo with max-similarity across all references
 
+### "Update an album's photos" / "Add a new album" / "Deploy a change"
+These are OPERATIONS tasks, not code changes — follow **[OPS.md](OPS.md)** and the
+"Operations & Index-Building Gotchas" section below. In short: build the index
+**locally with `PHOTOFINDER_FACE_BATCH=0`**, upload the index-only files into
+`cache/<orderId>/` on the server (**never `rm -rf cache`** when >1 album exists),
+then `docker restart photofinder` (index-only update) or
+`git pull && docker compose up -d --build` (code change).
+
+## Operations & Index-Building Gotchas (READ BEFORE any deploy/index task)
+
+Full runbook: **[OPS.md](OPS.md)**. The failure modes below are non-obvious and
+have actually bitten us — an agent that skips these will silently produce a
+broken deployment.
+
+- **Local index builds on Windows MUST set `PHOTOFINDER_FACE_BATCH=0`.**
+  onnxruntime 1.28 crashes natively (uncatchable) on batched ArcFace inference,
+  so a plain `--prepare` silently builds a **0-face index** (log just says
+  `Indexed N new photos (0 faces)`, no error). Always:
+  `set PHOTOFINDER_FACE_BATCH=0&& .venv\Scripts\python -m photofinder.cli --url <orderId> --prepare`.
+  `index.py` now warns loudly on a 0-face build — if you see that warning, the
+  index is empty and must NOT be uploaded. Server/Docker batches fine (leave default).
+- **Do NOT build an index via `docker exec` inside the running webui container**
+  — it gets OOM-killed (exit 137): the CLI loads a second set of models on top
+  of the running app and blows the 3G container limit. Build locally (preferred)
+  or `docker stop photofinder` → temp `docker run --rm ... --prepare` → `docker start`.
+- **Multiple albums live under `cache/<orderId>/`.** The live deployment serves
+  several albums (e.g. 省赛·毕节 `20260720172647201236` + 国赛·上海
+  `20260727190944809942`). **Never `rm -rf cache`** when >1 album exists — it
+  wipes the others. Add/update one album by writing only its `<orderId>/` subdir.
+- **Workflow = build locally, upload index-only.** Zip the index files
+  (photos.json, faces.npz, faces.json, done.json — NOT thumbs/) → `scp` from the
+  LOCAL machine → unzip into `~/SearCH/cache/<orderId>/` on the server. `scp` run
+  on the server fails (Host key verification) — it must run locally.
+- **`thumbs/` is only for the green bbox overlay**, not for search. Skip it for a
+  fast upload (results fall back to online preview URLs); upload it if the user
+  wants face boxes drawn.
+- **Index-only update → `docker restart photofinder`. Code change → `git pull` +
+  `docker compose up -d --build`.** Don't rebuild the image for a pure index update.
+- **Server facts:** project dir is `~/SearCH` (NOT `~/photofinder`); container
+  name `photofinder`; the `photofinder` CLI exists only inside the image (a bare
+  `photofinder` on the host = "command not found").
+
 ## Do NOT
 
 - Do not install the `insightface` pip package
@@ -145,3 +193,7 @@ Exception: `test_face_engine.py` integration tests need models in `models/`.
 - Do not change the atomic-write pattern in `index.py`
 - Do not remove concurrency locks in `pipeline.py`
 - Do not hardcode platform URLs outside `crawler.py`
+- Do not build a face index locally on Windows without `PHOTOFINDER_FACE_BATCH=0`
+  (silent 0-face index — see Operations gotchas above)
+- Do not build an index via `docker exec` in the running webui container (OOM, exit 137)
+- Do not `rm -rf cache` when multiple albums exist (wipes the other albums' indexes)
