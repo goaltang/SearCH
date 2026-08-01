@@ -27,6 +27,13 @@ _ORT_THREADS = int(os.environ.get(
     "PHOTOFINDER_ORT_THREADS",
     str(min(4, os.cpu_count() or 4))))
 
+# Batched ArcFace inference is faster, but some onnxruntime builds crash
+# (native, uncatchable) on batch>1 — observed with onnxruntime 1.28 on
+# Windows. Set PHOTOFINDER_FACE_BATCH=0 to force safe per-face recognition
+# for offline index builds. Live search embeds a single reference face, so
+# it is unaffected either way.
+_FACE_BATCH = os.environ.get("PHOTOFINDER_FACE_BATCH", "1").strip() != "0"
+
 
 def _session_options() -> "ort.SessionOptions":
     so = ort.SessionOptions()
@@ -242,10 +249,15 @@ class FaceEngine:
             return []
         if len(bboxes) == 0:
             return []
-        try:
-            embs = self.rec.get_batch(img, list(kpss))
-        except Exception:
-            # Fallback: some ONNX exports have fixed batch=1
+        embs = None
+        if _FACE_BATCH:
+            try:
+                embs = self.rec.get_batch(img, list(kpss))
+            except Exception:
+                embs = None  # fall through to per-face recognition
+        if embs is None:
+            # Per-face fallback: some ONNX exports are fixed batch=1, and some
+            # onnxruntime builds crash on batch>1 (see _FACE_BATCH note).
             embs = []
             for kps in kpss:
                 try:

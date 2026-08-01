@@ -160,10 +160,12 @@ class FaceIndex:
             return pid, [f for f in faces
                          if (f["bbox"][2] - f["bbox"][0]) >= min_face]
 
+        n_faces_total = 0
         with ThreadPoolExecutor(max_workers=workers) as ex:
             futs = [ex.submit(_work, item) for item in todo.items()]
             for n, fut in enumerate(as_completed(futs), 1):
                 pid, faces = fut.result()
+                n_faces_total += len(faces)
                 for f in faces:
                     new_embs.append(f["embedding"].astype(np.float32))
                     new_faces.append({"photo_id": pid, "bbox": f["bbox"],
@@ -178,8 +180,14 @@ class FaceIndex:
                     new_embs, new_faces, finished = [], [], []
 
         self._absorb(new_embs, new_faces, finished)
+        if total > 0 and n_faces_total == 0:
+            logger.warning(
+                "Indexed %d photos but found 0 faces! Recognition is likely "
+                "broken in this environment (on some onnxruntime builds set "
+                "PHOTOFINDER_FACE_BATCH=0). Do NOT trust an empty index.",
+                total)
         logger.info("Indexed %d new photos (%d faces) in %s",
-                    total, len(new_faces), self.dir)
+                    total, n_faces_total, self.dir)
         return total
 
     def _absorb(self, new_embs, new_faces, finished) -> None:
