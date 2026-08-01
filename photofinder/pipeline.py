@@ -42,6 +42,8 @@ class MatchResult:
     full_url: str     # original-resolution signed OSS url
     thumb_path: str   # local cached 720px thumb
     bbox: list[float] = field(default_factory=list)  # [x1,y1,x2,y2] on thumb
+    label: str = ""     # album display label (e.g. 省赛/国赛); "" for single-album run()
+    order_id: str = ""  # album orderId this match came from
 
 
 @dataclass
@@ -148,9 +150,94 @@ class PhotoFinder:
             progress_cb=None, cancel_event: threading.Event | None = None,
             excluded_ids: list[int] | None = None,
             incremental: bool = False) -> list[MatchResult]:
+        """Search a single album.
+
+        Thin wrapper over _search_one_album kept for the CLI and backward
+        compatibility; see run_multi() for searching several albums at once.
+        """
         order_id = parse_order_id(url)
         logger.info("Pipeline start: order=%s max_photos=%s threshold=%.3f",
                     order_id, max_photos, threshold)
+        ref_embs, _qualities = self.extract_reference(ref_image)
+        results = self._search_one_album(
+            order_id, "", ref_embs, max_photos=max_photos, threshold=threshold,
+            refresh=refresh, pwd=pwd, workers=workers, min_face=min_face,
+            progress_cb=progress_cb, cancel_event=cancel_event,
+            excluded_ids=excluded_ids, incremental=incremental)
+        logger.info("Pipeline finish: returning %d results", len(results))
+        return results
+
+    @staticmethod
+    def _normalize_albums(albums) -> list[dict]:
+        """Coerce album specs (str URL/orderId or dict) into
+        {"order_id", "label", "url"} dicts."""
+        norm: list[dict] = []
+        for i, a in enumerate(albums):
+            if isinstance(a, str):
+                oid = parse_order_id(a)
+                norm.append({"order_id": oid, "label": f"相册 {i + 1}",
+                             "url": album_url(oid)})
+            elif isinstance(a, dict):
+                oid = a.get("order_id") or parse_order_id(a.get("url", ""))
+                norm.append({"order_id": oid,
+                             "label": a.get("label") or f"相册 {i + 1}",
+                             "url": a.get("url") or album_url(oid)})
+            else:
+                raise ValueError(f"unsupported album spec: {a!r}")
+        if not norm:
+            raise ValueError("no albums provided")
+        return norm
+
+    def run_multi(self, albums, ref_image, max_photos: int | None = None,
+                  threshold: float = DEFAULT_THRESHOLD, refresh: bool = False,
+                  pwd: str | None = None, workers: int = 4,
+                  min_face: float = 24.0, progress_cb=None,
+                  cancel_event: threading.Event | None = None,
+                  excluded_ids: list[int] | None = None,
+                  incremental: bool = False) -> list[MatchResult]:
+        """Search several albums with one reference; merge results by score.
+
+        albums: list of {"order_id", "label", "url"} dicts (see
+        crawler.parse_albums) or plain URLs/orderIds. The reference face is
+        extracted once and reused for every album. A failing album is logged
+        and skipped so one bad album doesn't abort the whole search;
+        SearchCancelled always propagates.
+        """
+        norm = self._normalize_albums(albums)
+        logger.info("Pipeline multi-start: %d albums (%s)", len(norm),
+                    ", ".join(a["order_id"] for a in norm))
+        ref_embs, _qualities = self.extract_reference(ref_image)
+
+        all_results: list[MatchResult] = []
+        for a in norm:
+            try:
+                all_results.extend(self._search_one_album(
+                    a["order_id"], a["label"], ref_embs,
+                    max_photos=max_photos, threshold=threshold, refresh=refresh,
+                    pwd=pwd, workers=workers, min_face=min_face,
+                    progress_cb=progress_cb, cancel_event=cancel_event,
+                    excluded_ids=excluded_ids, incremental=incremental))
+            except SearchCancelled:
+                raise
+            except Exception as exc:
+                logger.exception("Album %s (%s) failed, skipping: %s",
+                                 a["order_id"], a["label"], exc)
+        all_results.sort(key=lambda r: r.score, reverse=True)
+        logger.info("Pipeline multi-finish: %d total results", len(all_results))
+        return all_results
+
+    def _search_one_album(self, order_id: str, label: str,
+                          ref_embs: list[np.ndarray], *,
+                          max_photos: int | None = None,
+                          threshold: float = DEFAULT_THRESHOLD,
+                          refresh: bool = False, pwd: str | None = None,
+                          workers: int = 4, min_face: float = 24.0,
+                          progress_cb=None,
+                          cancel_event: threading.Event | None = None,
+                          excluded_ids: list[int] | None = None,
+                          incremental: bool = False) -> list[MatchResult]:
+        """Build/refresh one album's index and search it with pre-computed
+        reference embeddings. Returns this album's matches (labelled)."""
         crawler = AlbumCrawler(order_id, self.cache_root, pwd=pwd)
 
         def _check_cancel():
@@ -173,7 +260,7 @@ class PhotoFinder:
                                           refresh=refresh, progress_cb=_cb)
         if max_photos:
             photos = photos[:max_photos]
-        logger.info("Metadata ready: %d photos", len(photos))
+        logger.info("Album %s metadata ready: %d photos", order_id, len(photos))
         _check_cancel()
 
         # 2) thumbnails (continue even if some fail)
@@ -181,9 +268,10 @@ class PhotoFinder:
         available = {pid: path for pid, path in thumbs.items()
                      if path is not None and path.exists()}
         if len(available) < len(thumbs):
-            logger.warning("Only %d/%d thumbs available", len(available), len(thumbs))
+            logger.warning("Album %s: only %d/%d thumbs available",
+                           order_id, len(available), len(thumbs))
         if not available:
-            logger.error("No usable thumbnails; aborting")
+            logger.error("Album %s: no usable thumbnails", order_id)
             raise ValueError("no usable thumbnails available")
         _check_cancel()
 
@@ -199,10 +287,9 @@ class PhotoFinder:
                         min_face=min_face, progress_cb=_cb)
         _check_cancel()
 
-        # 4) reference embedding + search
-        ref_embs, _qualities = self.extract_reference(ref_image)
+        # 4) search with the shared reference embeddings
         hits = index.search(ref_embs, threshold=threshold)
-        logger.info("Search found %d hits", len(hits))
+        logger.info("Album %s search found %d hits", order_id, len(hits))
 
         by_id = {p.photo_id: p for p in photos}
         results = []
@@ -219,6 +306,7 @@ class PhotoFinder:
                 full_url=p.full_url,
                 thumb_path=str(available[p.photo_id]),
                 bbox=h.get("bbox", []),
+                label=label,
+                order_id=order_id,
             ))
-        logger.info("Pipeline finish: returning %d results", len(results))
         return results

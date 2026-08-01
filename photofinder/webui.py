@@ -37,9 +37,14 @@ DOWNLOAD_MAX = int(os.environ.get("PHOTOFINDER_DOWNLOAD_MAX", "300"))
 STAGE_LABELS = {"meta": "获取照片列表", "download": "下载照片",
                 "index": "建立人脸索引"}
 
-# 常用活动相册链接（预填充，可修改）
-DEFAULT_ALBUM_URL = ("https://www.yipai360.com/photolivepc/"
-                     "?orderId=20260720172647201236&channel=h5&origin=qrcode")
+# 常用活动相册链接（预填充，可修改）。每行一个相册：「标签 链接」，
+# 查找时会同时检索全部相册并把结果按相册分组展示。
+DEFAULT_ALBUM_URL = (
+    "省赛·毕节 https://www.yipai360.com/photolivepc/"
+    "?orderId=20260720172647201236&channel=h5&origin=qrcode\n"
+    "国赛·上海 https://www.yipai360.com/photolivepc/"
+    "?orderId=20260727190944809942&channel=h5&origin=qrcode"
+)
 
 def _force_light_theme(theme: gr.themes.Base) -> gr.themes.Base:
     """UI 仅按浅色设计：把主题的全部 dark 变量钉为对应的浅色值，
@@ -201,6 +206,27 @@ body, .gradio-container {
 .pf-links a { color: var(--pf-primary-dark); text-decoration: none; font-weight: 600; }
 .pf-links a:hover { text-decoration: underline; }
 
+/* ---------- Album sections (multi-album results) ---------- */
+.pf-album-section { margin-bottom: 22px; }
+.pf-album-section:last-child { margin-bottom: 0; }
+.pf-album-head {
+  display: flex; align-items: center; gap: 10px;
+  margin: 2px 0 12px; padding-bottom: 8px;
+  border-bottom: 1px solid var(--pf-border);
+}
+.pf-album-tag {
+  font-size: 13px; font-weight: 700; color: #fff;
+  background: linear-gradient(90deg, #6366f1, #8b5cf6);
+  padding: 4px 14px; border-radius: 999px;
+}
+.pf-album-count { font-size: 13px; color: var(--pf-muted); }
+.pf-album-badge {
+  position: absolute; top: 8px; left: 8px;
+  font-size: 11px; font-weight: 700; color: #fff;
+  background: rgba(30, 41, 59, .78);
+  padding: 2px 8px; border-radius: 999px;
+}
+
 /* ---------- Mobile ---------- */
 @media (max-width: 768px) {
   .gradio-container { padding-top: 12px !important; }
@@ -333,18 +359,17 @@ def _thumb_with_bbox(thumb_path: str, bbox: list[float],
         return None
 
 
-def _render_results(results, album_url: str) -> str:
-    if not results:
-        return EMPTY_HTML
-    cards = []
-    for r in results:
-        fname = html.escape(r.fname)
-        img_src = _thumb_with_bbox(r.thumb_path, r.bbox) or r.preview_url
-        cards.append(f"""
+def _render_card(r) -> str:
+    fname = html.escape(r.fname)
+    img_src = _thumb_with_bbox(r.thumb_path, r.bbox) or r.preview_url
+    badge = (f"<span class='pf-album-badge'>{html.escape(r.label)}</span>"
+             if r.label else "")
+    return f"""
 <div class="pf-card">
   <div class="pf-thumb">
     <img src="{img_src}" loading="lazy" alt="{fname}"/>
     <span class="pf-score {_score_class(r.score)}">{r.score:.3f}</span>
+    {badge}
   </div>
   <div class="pf-meta">
     <div class="pf-fname" title="{fname}">{fname}</div>
@@ -355,12 +380,43 @@ def _render_results(results, album_url: str) -> str:
       </span>
     </div>
   </div>
+</div>"""
+
+
+def _render_results(results, albums) -> str:
+    """Render hits grouped by album (section order follows ``albums``).
+
+    albums: list of {"order_id", "label", "url"} from crawler.parse_albums.
+    """
+    if not results:
+        return EMPTY_HTML
+    by_album: dict[str, list] = {}
+    for r in results:
+        by_album.setdefault(r.order_id, []).append(r)
+
+    counts = " · ".join(
+        f"{html.escape(a['label'])} {len(by_album[a['order_id']])}张"
+        for a in albums if by_album.get(a["order_id"]))
+    summary = (f"<div class='pf-summary'><span class='pf-count'>共命中 "
+               f"{len(results)} 张</span>"
+               f"<span>{counts} · 按相似度从高到低</span></div>")
+
+    sections = []
+    for a in albums:
+        group = by_album.get(a["order_id"])
+        if not group:
+            continue
+        cards = "".join(_render_card(r) for r in group)
+        sections.append(f"""
+<div class="pf-album-section">
+  <div class="pf-album-head">
+    <span class="pf-album-tag">{html.escape(a['label'])}</span>
+    <span class="pf-album-count">{len(group)} 张</span>
+    <a class="pf-open-album" href="{a['url']}" target="_blank">打开原网页 →</a>
+  </div>
+  <div class="pf-grid">{cards}</div>
 </div>""")
-    return (f"<div class='pf-summary'><span class='pf-count'>命中 "
-            f"{len(results)} 张</span><span>按相似度从高到低排列</span>"
-            f"<a class='pf-open-album' href='{album_url}' target='_blank'>"
-            f"打开活动原网页 →</a></div>"
-            f"<div class='pf-grid'>" + "".join(cards) + "</div>")
+    return summary + "".join(sections)
 
 
 # ── quality feedback ──────────────────────────────────────────────
@@ -390,6 +446,11 @@ def run_search(url, gallery_value, threshold, max_photos, pwd,
                progress=gr.Progress()):
     if not url or not url.strip():
         raise gr.Error("请输入活动相册链接")
+    from .crawler import parse_albums
+    try:
+        albums = parse_albums(url)
+    except ValueError as e:
+        raise gr.Error(str(e))
     ref_imgs = [cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
                 for img, _cap in (gallery_value or [])]
     if not ref_imgs:
@@ -410,10 +471,10 @@ def run_search(url, gallery_value, threshold, max_photos, pwd,
         progress(frac, desc=f"{label} {done}/{total or '?'}")
 
     progress(0, desc="启动")
-    logger.info("WebUI search: url=%s refs=%d", url.strip(), len(ref_imgs))
+    logger.info("WebUI search: %d albums, refs=%d", len(albums), len(ref_imgs))
     try:
-        results = FINDER.run(
-            url.strip(), ref_imgs, max_photos=max_n,
+        results = FINDER.run_multi(
+            albums, ref_imgs, max_photos=max_n,
             threshold=float(threshold), pwd=pwd or None,
             progress_cb=cb, cancel_event=cancel_state,
             excluded_ids=excl, incremental=bool(incremental))
@@ -429,9 +490,8 @@ def run_search(url, gallery_value, threshold, max_photos, pwd,
         logger.exception("Unexpected WebUI search error")
         raise gr.Error(f"搜索出错: {exc}")
     progress(1, desc="完成")
-    from .crawler import album_url, parse_order_id
     logger.info("WebUI search finished: %d hits", len(results))
-    return (_render_results(results, album_url(parse_order_id(url.strip()))),
+    return (_render_results(results, albums),
             results, cancel_state, gr.update(visible=bool(results)))
 
 
@@ -544,11 +604,11 @@ def build_app() -> gr.Blocks:
                 gr.HTML("<p class='pf-panel-title'>"
                         "<span class='pf-step-no'>1</span>设置查找条件</p>")
                 url = gr.Textbox(
-                    label="活动相册链接",
+                    label="活动相册链接（每行一个，可一次查多个相册）",
                     value=DEFAULT_ALBUM_URL,
-                    info="已预填常用活动链接，可直接修改",
-                    lines=1, max_lines=1,
-                    placeholder="https://www.yipai360.com/…")
+                    info="已预填省赛+国赛两个相册，会一起检索；格式「标签 链接」，标签可省略",
+                    lines=2, max_lines=4,
+                    placeholder="省赛 https://www.yipai360.com/…\n国赛 https://www.yipai360.com/…")
                 gr.HTML("<p class='pf-hint'>在下方上传参考照片（正脸、光线充足效果最佳），"
                         "自动加入列表，可反复添加多张；查找时取每张中最清晰的人脸</p>")
                 ref_gallery = gr.Gallery(

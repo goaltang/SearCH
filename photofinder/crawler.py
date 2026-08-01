@@ -84,6 +84,49 @@ def album_url(order_id: str) -> str:
     return f"https://www.yipai360.com/photolivepc/?orderId={order_id}"
 
 
+def parse_albums(text: str) -> list[dict]:
+    """Parse a multi-line album specification into a list of albums.
+
+    Each non-empty line describes one album: ``[标签] 链接或orderId``.
+    The label is optional — any text on the line that is not part of the
+    URL/orderId becomes the label (surrounding separators stripped). When
+    omitted, a default ``相册 N`` is assigned. Blank lines and lines starting
+    with ``#`` are ignored; duplicate orderIds are de-duplicated (first wins).
+
+    Returns [{"order_id", "label", "url"}] with ``url`` the canonical album
+    page. Raises ValueError when no album can be parsed.
+    """
+    albums: list[dict] = []
+    seen: set[str] = set()
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        url_m = re.search(r"https?://\S+", line)
+        try:
+            if url_m:
+                order_id = parse_order_id(url_m.group(0))
+                label_part = line[:url_m.start()] + line[url_m.end():]
+            else:
+                num_m = re.search(r"(?<!\d)(\d{6,})(?!\d)", line)
+                if not num_m:
+                    continue
+                order_id = num_m.group(1)
+                label_part = line[:num_m.start()] + line[num_m.end():]
+        except ValueError:
+            logger.warning("Skipping unparseable album line: %r", line)
+            continue
+        if order_id in seen:
+            continue
+        seen.add(order_id)
+        label = label_part.strip().strip(":：,，、 \t") or f"相册 {len(albums) + 1}"
+        albums.append({"order_id": order_id, "label": label,
+                       "url": album_url(order_id)})
+    if not albums:
+        raise ValueError("未能从输入中解析出任何相册链接")
+    return albums
+
+
 class AlbumCrawler:
     """Fetches photo metadata and downloads thumbnails with disk caching."""
 

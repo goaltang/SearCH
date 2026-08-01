@@ -13,6 +13,7 @@ from photofinder.crawler import (
     HEADERS,
     Photo,
     album_url,
+    parse_albums,
     parse_order_id,
 )
 
@@ -279,3 +280,57 @@ def test_download_thumbs_omits_failed_downloads(tmp_path: Path, monkeypatch, cap
     assert 1 not in thumbs
     assert 2 in thumbs
     assert any("Thumb download failed" in rec.message for rec in caplog.records)
+
+
+# --------------------------------------------------------------------------- parse_albums
+
+def test_parse_albums_single_url_with_label():
+    text = "省赛 https://www.yipai360.com/photolivepc/?orderId=111&channel=h5"
+    albums = parse_albums(text)
+    assert len(albums) == 1
+    assert albums[0]["order_id"] == "111"
+    assert albums[0]["label"] == "省赛"
+    assert "orderId=111" in albums[0]["url"]
+
+
+def test_parse_albums_multiple_lines():
+    text = ("省赛·毕节 https://x/?orderId=111\n"
+            "国赛·上海 https://x/?orderId=222")
+    albums = parse_albums(text)
+    assert [a["order_id"] for a in albums] == ["111", "222"]
+    assert [a["label"] for a in albums] == ["省赛·毕节", "国赛·上海"]
+
+
+def test_parse_albums_default_label_when_omitted():
+    albums = parse_albums("https://x/?orderId=111\nhttps://x/?orderId=222")
+    assert [a["label"] for a in albums] == ["相册 1", "相册 2"]
+
+
+def test_parse_albums_accepts_bare_order_id():
+    albums = parse_albums("国赛 20260727190944809942")
+    assert albums[0]["order_id"] == "20260727190944809942"
+    assert albums[0]["label"] == "国赛"
+
+
+def test_parse_albums_strips_label_separators():
+    albums = parse_albums("国赛: https://x/?orderId=222")
+    assert albums[0]["label"] == "国赛"
+
+
+def test_parse_albums_ignores_blank_and_comment_lines():
+    text = "\n# comment\n省赛 https://x/?orderId=111\n\n"
+    albums = parse_albums(text)
+    assert len(albums) == 1
+    assert albums[0]["order_id"] == "111"
+
+
+def test_parse_albums_dedupes_order_ids_first_label_wins():
+    text = "A https://x/?orderId=111\nB https://x/?orderId=111"
+    albums = parse_albums(text)
+    assert len(albums) == 1
+    assert albums[0]["label"] == "A"
+
+
+def test_parse_albums_raises_when_nothing_parseable():
+    with pytest.raises(ValueError):
+        parse_albums("no links here\n# just a comment")

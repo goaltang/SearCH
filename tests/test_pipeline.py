@@ -231,3 +231,96 @@ def test_run_reports_progress(tmp_path: Path, monkeypatch):
     assert "meta" in progress
     assert "download" in progress
     assert "index" in progress
+
+
+# --------------------------------------------------------------------------- run_multi
+
+def _make_photos(ids):
+    return [Photo(photo_id=i, fname=f"{i}.jpg", width=100, height=100,
+                  detect_url=f"d{i}", preview_url=f"p{i}", full_url=f"f{i}")
+            for i in ids]
+
+
+def test_run_multi_merges_and_sorts_across_albums(tmp_path: Path, monkeypatch):
+    finder = PhotoFinder(cache_root=tmp_path)
+    finder._engine = FakeEngine()
+
+    data_by_order = {}
+    for oid, ids in [("111", [1, 2]), ("222", [3, 4])]:
+        thumbs = {i: tmp_path / oid / f"{i}.jpg" for i in ids}
+        for p in thumbs.values():
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(b"thumb")
+        data_by_order[oid] = (_make_photos(ids), thumbs)
+
+    def crawler_factory(order_id, cache_root, pwd=None, tag_id=None):
+        c = FakeCrawler(order_id, cache_root, pwd=pwd, tag_id=tag_id)
+        c.set_data(*data_by_order[order_id])
+        return c
+
+    hits_by_order = {
+        "111": [{"photo_id": 2, "score": 0.70}],
+        "222": [{"photo_id": 3, "score": 0.90}, {"photo_id": 4, "score": 0.50}],
+    }
+
+    def index_factory(index_dir):
+        idx = FakeFaceIndex(index_dir)
+        idx.set_hits(hits_by_order.get(Path(index_dir).name, []))
+        return idx
+
+    monkeypatch.setattr(pipeline_mod, "AlbumCrawler", crawler_factory)
+    monkeypatch.setattr(pipeline_mod, "FaceIndex", index_factory)
+
+    albums = [
+        {"order_id": "111", "label": "省赛", "url": "https://x/?orderId=111"},
+        {"order_id": "222", "label": "国赛", "url": "https://x/?orderId=222"},
+    ]
+    results = finder.run_multi(albums, np.zeros((100, 100, 3), dtype=np.uint8))
+
+    # merged across albums and sorted by score desc
+    assert [r.photo_id for r in results] == [3, 2, 4]
+    assert [r.label for r in results] == ["国赛", "省赛", "国赛"]
+    assert [r.order_id for r in results] == ["222", "111", "222"]
+    assert results[0].score == pytest.approx(0.90, rel=1e-4)
+    assert "orderId=222" in results[0].album_url
+
+
+def test_run_multi_skips_failing_album(tmp_path: Path, monkeypatch):
+    finder = PhotoFinder(cache_root=tmp_path)
+    finder._engine = FakeEngine()
+
+    # album 111: thumbs point at non-existent files -> no usable thumbs -> skipped
+    missing = {i: tmp_path / "111" / f"{i}.jpg" for i in (1, 2)}
+    # album 222: valid
+    good = {3: tmp_path / "222" / "3.jpg"}
+    good[3].parent.mkdir(parents=True, exist_ok=True)
+    good[3].write_bytes(b"thumb")
+
+    data_by_order = {
+        "111": (_make_photos([1, 2]), missing),
+        "222": (_make_photos([3]), good),
+    }
+
+    def crawler_factory(order_id, cache_root, pwd=None, tag_id=None):
+        c = FakeCrawler(order_id, cache_root, pwd=pwd, tag_id=tag_id)
+        c.set_data(*data_by_order[order_id])
+        return c
+
+    def index_factory(index_dir):
+        idx = FakeFaceIndex(index_dir)
+        idx.set_hits([{"photo_id": 3, "score": 0.85}]
+                     if Path(index_dir).name == "222" else [])
+        return idx
+
+    monkeypatch.setattr(pipeline_mod, "AlbumCrawler", crawler_factory)
+    monkeypatch.setattr(pipeline_mod, "FaceIndex", index_factory)
+
+    albums = [
+        {"order_id": "111", "label": "省赛", "url": "https://x/?orderId=111"},
+        {"order_id": "222", "label": "国赛", "url": "https://x/?orderId=222"},
+    ]
+    results = finder.run_multi(albums, np.zeros((100, 100, 3), dtype=np.uint8))
+
+    # the failing album is skipped; the healthy one still returns its hits
+    assert [r.photo_id for r in results] == [3]
+    assert results[0].label == "国赛"
