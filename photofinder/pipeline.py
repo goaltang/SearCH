@@ -41,6 +41,7 @@ class MatchResult:
     preview_url: str  # 375px signed OSS url
     full_url: str     # original-resolution signed OSS url
     thumb_path: str   # local cached 720px thumb
+    detect_url: str = ""  # 1080px signed OSS url (reliable; full_url often 403s)
     bbox: list[float] = field(default_factory=list)  # [x1,y1,x2,y2] on thumb
     label: str = ""     # album display label (e.g. 省赛/国赛); "" for single-album run()
     order_id: str = ""  # album orderId this match came from
@@ -305,6 +306,7 @@ class PhotoFinder:
                 preview_url=p.preview_url,
                 full_url=p.full_url,
                 thumb_path=str(available[p.photo_id]),
+                detect_url=p.detect_url,
                 bbox=h.get("bbox", []),
                 label=label,
                 order_id=order_id,

@@ -498,6 +498,9 @@ def _thumb_with_bbox(thumb_path: str, bbox: list[float],
 def _render_card(r) -> str:
     fname = html.escape(r.fname)
     img_src = _thumb_with_bbox(r.thumb_path, r.bbox) or r.preview_url
+    # 大图: the original (full_url) frequently 403s on this platform; the
+    # 1080px detect_url is the highest-resolution variant reliably accessible.
+    big_url = r.detect_url or r.full_url
     badge = (f"<span class='pf-album-badge'>{html.escape(r.label)}</span>"
              if r.label else "")
     return f"""
@@ -512,7 +515,7 @@ def _render_card(r) -> str:
     <div class="pf-meta-row">
       <span>ID {r.photo_id}</span>
       <span class="pf-links">
-        <a href="{r.full_url}" target="_blank" title="查看大图（部分浏览器可能触发下载）">大图</a>
+        <a href="{big_url}" target="_blank" title="查看大图（部分浏览器可能触发下载）">大图</a>
       </span>
     </div>
   </div>
@@ -656,6 +659,38 @@ def _cleanup_zips() -> None:
         pass
 
 
+def _fetch_best_source(r, req):
+    """Return ``(r, image_bytes)`` trying sources from high to low quality.
+
+    Order: original (``full_url``, fast-fail) → local 1080px thumb (no
+    network) → 1080px ``detect_url`` → 375px ``preview_url``. The platform
+    403s many originals, so the fallbacks guarantee the photo is still
+    packaged. Raises RuntimeError when no source yields bytes.
+    """
+    try:
+        resp = req.get(r.full_url, timeout=30)
+        resp.raise_for_status()
+        if resp.content:
+            return r, resp.content
+    except Exception as exc:
+        logger.debug("full_url failed for %d: %s", r.photo_id, exc)
+    if r.thumb_path:
+        try:
+            data = Path(r.thumb_path).read_bytes()
+            if data:
+                return r, data
+        except OSError:
+            pass
+    for url in (r.detect_url, r.preview_url):
+        if not url:
+            continue
+        resp = req.get(url, timeout=60)
+        resp.raise_for_status()
+        if resp.content:
+            return r, resp.content
+    raise RuntimeError(f"no usable image source for photo {r.photo_id}")
+
+
 def download_all(results, progress=gr.Progress()):
     """Download all hit photos concurrently and pack them into a zip.
 
@@ -675,9 +710,7 @@ def download_all(results, progress=gr.Progress()):
     tmp = ZIP_DIR / f"photofinder_{int(time.time())}_{os.getpid()}.zip"
 
     def _fetch(r):
-        resp = _req.get(r.full_url, timeout=120)
-        resp.raise_for_status()
-        return r, resp.content
+        return _fetch_best_source(r, _req)
 
     ok, fail = 0, 0
     total = len(results)
