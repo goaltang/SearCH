@@ -304,6 +304,16 @@ body, .gradio-container {
 }
 @keyframes pf-spin { to { transform: rotate(360deg); } }
 
+/* ---------- Batch-download status banner ---------- */
+.pf-dl-status {
+  margin: 8px 0; padding: 10px 14px; border-radius: 10px;
+  font-size: 13px; line-height: 1.5;
+}
+.pf-dl-status--info { background: #f0fdfa; color: var(--pf-primary-dark); border: 1px solid #99f6e4; }
+.pf-dl-status--ok   { background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; }
+.pf-dl-status--warn { background: #fffbeb; color: #b45309; border: 1px solid #fcd34d; }
+.pf-dl-status--err  { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
+
 /* ---------- Button press feedback (all buttons) ---------- */
 .gradio-container button:active {
   transform: scale(.97) !important;
@@ -691,18 +701,27 @@ def _fetch_best_source(r, req):
     raise RuntimeError(f"no usable image source for photo {r.photo_id}")
 
 
+def _dl_status_html(kind: str, text: str) -> str:
+    return f"<div class='pf-dl-status pf-dl-status--{kind}'>{text}</div>"
+
+
 def download_all(results, progress=gr.Progress()):
     """Download all hit photos concurrently and pack them into a zip.
 
     Photos are fetched in small batches (peak memory = one batch, not the
     whole album) and streamed straight to an on-disk zip file.
+
+    Returns ``(file_update, status_html)`` so the UI can show an explicit
+    outcome instead of silently appearing/disappearing.
     """
     if not results:
-        raise gr.Error("没有可下载的结果，请先搜索")
+        return (gr.update(visible=False),
+                _dl_status_html("warn", "没有可下载的结果，请先搜索"))
     if len(results) > DOWNLOAD_MAX:
-        raise gr.Error(
-            f"命中 {len(results)} 张，超过单次打包上限 {DOWNLOAD_MAX} 张。"
-            f"请提高相似度阈值缩小范围，或分批用「大图」链接下载")
+        return (gr.update(visible=False),
+                _dl_status_html("warn",
+                                f"命中 {len(results)} 张，超过单次打包上限 "
+                                f"{DOWNLOAD_MAX} 张，请提高相似度阈值缩小范围"))
     import requests as _req
 
     _cleanup_zips()
@@ -738,9 +757,17 @@ def download_all(results, progress=gr.Progress()):
         raise
     if ok == 0:
         tmp.unlink(missing_ok=True)
-        raise gr.Error(f"全部 {fail} 张下载失败，请检查网络或链接是否过期")
+        return (gr.update(visible=False),
+                _dl_status_html("err",
+                                f"全部 {fail} 张下载失败，请检查网络或链接是否过期"))
     logger.info("Batch download: %d ok, %d failed -> %s", ok, fail, tmp)
-    return gr.update(value=str(tmp), visible=True)
+    if fail:
+        status = _dl_status_html("warn",
+                                 f"已打包 {ok} 张（{fail} 张下载失败），zip 已就绪")
+    else:
+        status = _dl_status_html("ok",
+                                 f"✓ 已打包 {ok} 张照片，zip 已就绪，请在下方文件处下载")
+    return gr.update(value=str(tmp), visible=True), status
 
 
 def _append_snapshot(gallery_value, snapshot):
@@ -818,6 +845,7 @@ def build_app() -> gr.Blocks:
                 with gr.Row():
                     download_btn = gr.Button("↓ 打包下载全部命中照片",
                                              size="sm", visible=False)
+                dl_status = gr.HTML("")
                 download_file = gr.File(label="打包结果", visible=False)
         results_state = gr.State(value=[])
         cancel_state = gr.State(value=None)
@@ -829,16 +857,22 @@ def build_app() -> gr.Blocks:
         ref_gallery.change(check_quality, [ref_gallery], [quality_html])
         undo_btn.click(_undo_last, [ref_gallery], [ref_gallery])
         clear_btn.click(_clear_gallery, [], [ref_gallery])
-        btn.click(lambda: (LOADING_HTML, gr.update(visible=False)),
-                  None, [out, download_btn]
+        btn.click(lambda: (LOADING_HTML, gr.update(visible=False), "",
+                           gr.update(visible=False)),
+                  None, [out, download_btn, dl_status, download_file]
                   ).then(run_search,
                   [url, ref_gallery, threshold, max_photos, pwd,
                    exclude_text, incremental, cancel_state],
                   [out, results_state, cancel_state, download_btn],
                   concurrency_limit=MAX_CONCURRENT)
         cancel_btn.click(cancel_search, [cancel_state], [cancel_state])
-        download_btn.click(download_all, [results_state], [download_file],
-                           concurrency_limit=2)
+        download_btn.click(
+            lambda res: (_dl_status_html("info",
+                          f"正在打包 {len(res)} 张照片，请稍候…"),
+                         gr.update(visible=False)),
+            [results_state], [dl_status, download_file],
+        ).then(download_all, [results_state], [download_file, dl_status],
+               concurrency_limit=2)
     return app
 
 
