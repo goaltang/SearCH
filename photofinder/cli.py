@@ -61,6 +61,12 @@ def main(argv=None):
         order_id = parse_order_id(args.url)
         crawler = AlbumCrawler(order_id, args.cache, pwd=args.pwd)
         print(f"[准备模式] 相册 {order_id}")
+        if args.incremental:
+            # Pull only photos added since the last cached snapshot and merge
+            # them into cache; without this, prepare reuses stale metadata and
+            # silently misses newly uploaded photos.
+            new = crawler.fetch_incremental(progress_cb=_progress)
+            print(f"\n新增照片: {len(new)} 张")
         photos = crawler.get_metadata(max_photos=args.max_photos,
                                       refresh=args.refresh,
                                       progress_cb=_progress)

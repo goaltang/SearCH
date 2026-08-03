@@ -284,7 +284,6 @@ class AlbumCrawler:
             return self.fetch_metadata(progress_cb=progress_cb)
         old_photos, _complete = cached
         known_ids = {p.photo_id for p in old_photos}
-        max_id = max(known_ids) if known_ids else 0
 
         new_photos: list[Photo] = []
         page = 1
@@ -309,9 +308,9 @@ class AlbumCrawler:
             pg = data.get("pagination", {})
             if not batch or page >= pg.get("totalPage", page):
                 break
-            # Stop early once we've passed all cached ids (API is desc by id)
-            if batch and min(p.photo_id for p in batch) <= max_id:
-                break
+            # NOTE: photo_id is NOT monotonic with upload time (new photos
+            # interleave with old ids), so scan every page; an id-based early
+            # stop silently drops newly uploaded photos.
             page += 1
 
         if new_photos:

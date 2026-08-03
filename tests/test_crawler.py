@@ -219,6 +219,47 @@ def test_get_metadata_refreshes_when_requested(tmp_path: Path, monkeypatch):
     assert photos[0].photo_id == 2
 
 
+def test_fetch_incremental_collects_interleaved_new_photos(tmp_path, monkeypatch):
+    """New photo ids interleave with old ones; incremental must scan every
+    page, not stop at the first page containing a known id (regression)."""
+    crawler = AlbumCrawler("123", cache_root=tmp_path)
+    crawler._save_metadata(
+        [Photo.from_api(_photo_item(i)) for i in (1, 2, 3)], complete=True)
+
+    pages = {
+        1: {"data": {"pagination": {"page": 1, "pageSize": 500,
+                                    "count": 6, "totalPage": 2},
+                     "photos": [_photo_item(100), _photo_item(1),
+                                _photo_item(101)]}},
+        2: {"data": {"pagination": {"page": 2, "pageSize": 500,
+                                    "count": 6, "totalPage": 2},
+                     "photos": [_photo_item(102), _photo_item(2)]}},
+    }
+
+    def fake_get(url, params=None, **kwargs):
+        return _FakeResponse(pages[params.get("page", 1)])
+
+    monkeypatch.setattr(crawler.session, "get", fake_get)
+    new = crawler.fetch_incremental()
+
+    assert [p.photo_id for p in new] == [100, 101, 102]
+    merged, complete = crawler.load_metadata()
+    assert complete is True
+    assert {p.photo_id for p in merged} == {1, 2, 3, 100, 101, 102}
+
+
+def test_fetch_incremental_no_new_returns_empty(tmp_path, monkeypatch):
+    crawler = AlbumCrawler("123", cache_root=tmp_path)
+    crawler._save_metadata([Photo.from_api(_photo_item(1))], complete=True)
+
+    payload = {"data": {"pagination": {"page": 1, "pageSize": 500,
+                                       "count": 1, "totalPage": 1},
+                        "photos": [_photo_item(1)]}}
+    monkeypatch.setattr(crawler.session, "get",
+                        lambda *a, **k: _FakeResponse(payload))
+    assert crawler.fetch_incremental() == []
+
+
 def test_download_thumbs_skips_existing_files(tmp_path: Path, monkeypatch):
     crawler = AlbumCrawler("123", cache_root=tmp_path)
     photo = Photo.from_api(_photo_item(1))
