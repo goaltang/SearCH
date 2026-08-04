@@ -38,6 +38,57 @@ DOWNLOAD_MAX = int(os.environ.get("PHOTOFINDER_DOWNLOAD_MAX", "300"))
 STAGE_LABELS = {"meta": "获取照片列表", "download": "下载照片",
                 "index": "建立人脸索引"}
 
+
+class _Stats:
+    """In-memory usage counters (reset on container restart).
+
+    End users see a social-proof footer (total visits); the operator sees
+    live concurrency in ``docker logs`` via ``snapshot()`` lines.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.visits = 0
+        self.searches = 0
+        self.downloads = 0
+        self.active_searches = 0
+        self.active_downloads = 0
+
+    def visit(self) -> int:
+        with self._lock:
+            self.visits += 1
+            return self.visits
+
+    def search_start(self) -> int:
+        with self._lock:
+            self.searches += 1
+            self.active_searches += 1
+            return self.active_searches
+
+    def search_end(self) -> None:
+        with self._lock:
+            self.active_searches = max(0, self.active_searches - 1)
+
+    def download_start(self) -> int:
+        with self._lock:
+            self.downloads += 1
+            self.active_downloads += 1
+            return self.active_downloads
+
+    def download_end(self) -> None:
+        with self._lock:
+            self.active_downloads = max(0, self.active_downloads - 1)
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            return {"visits": self.visits, "searches": self.searches,
+                    "downloads": self.downloads,
+                    "active_searches": self.active_searches,
+                    "active_downloads": self.active_downloads}
+
+
+STATS = _Stats()
+
 # 常用活动相册链接（预填充，可修改）。每行一个相册：「标签 链接」，
 # 查找时会同时检索全部相册并把结果按相册分组展示。
 DEFAULT_ALBUM_URL = (
@@ -320,6 +371,13 @@ body, .gradio-container {
   transition: transform .1s ease !important;
 }
 
+/* ---------- Footer social-proof stats ---------- */
+.pf-footer {
+  margin: 18px auto 4px; text-align: center;
+  font-size: 12px; color: var(--pf-muted);
+}
+.pf-footer b { color: var(--pf-primary-dark); font-weight: 700; }
+
 /* ---------- Mobile ---------- */
 @media (max-width: 768px) {
   .gradio-container { padding-top: 12px !important; }
@@ -440,6 +498,13 @@ LOADING_HTML = """
      再次搜索同一相册会快很多。</p>
 </div>
 """
+
+
+def _render_footer() -> str:
+    """Social-proof footer; also counts a page visit (fires on app.load)."""
+    n = STATS.visit()
+    return (f"<div class='pf-footer'>已有 <b>{n}</b> 位伙伴使用本工具"
+            f"查找自己的照片</div>")
 
 
 _SVG_SEARCH_SM = ("<svg viewBox='0 0 24 24' width='14' height='14' fill='none' "
@@ -619,7 +684,9 @@ def run_search(url, gallery_value, threshold, max_photos, pwd,
         progress(frac, desc=f"{label} {done}/{total or '?'}")
 
     progress(0, desc="启动")
-    logger.info("WebUI search: %d albums, refs=%d", len(albums), len(ref_imgs))
+    STATS.search_start()
+    logger.info("WebUI search: %d albums, refs=%d | stats=%s",
+                len(albums), len(ref_imgs), STATS.snapshot())
     try:
         results = FINDER.run_multi(
             albums, ref_imgs, max_photos=max_n,
@@ -637,6 +704,8 @@ def run_search(url, gallery_value, threshold, max_photos, pwd,
     except Exception as exc:
         logger.exception("Unexpected WebUI search error")
         raise gr.Error(f"搜索出错: {exc}")
+    finally:
+        STATS.search_end()
     progress(1, desc="完成")
     logger.info("WebUI search finished: %d hits", len(results))
     return (_render_results(results, albums),
@@ -735,6 +804,9 @@ def download_all(results, progress=gr.Progress()):
     total = len(results)
     batch_size = 12  # bounds peak memory: ~12 x one photo's bytes
     progress(0, desc=f"打包下载 0/{total}")
+    STATS.download_start()
+    logger.info("Batch download started: %d photos | stats=%s",
+                total, STATS.snapshot())
     try:
         with zipfile.ZipFile(tmp, "w", zipfile.ZIP_STORED,
                              allowZip64=True) as zf, \
@@ -755,6 +827,8 @@ def download_all(results, progress=gr.Progress()):
     except Exception:
         tmp.unlink(missing_ok=True)
         raise
+    finally:
+        STATS.download_end()
     if ok == 0:
         tmp.unlink(missing_ok=True)
         return (gr.update(visible=False),
@@ -847,10 +921,12 @@ def build_app() -> gr.Blocks:
                                              size="sm", visible=False)
                 dl_status = gr.HTML("")
                 download_file = gr.File(label="打包结果", visible=False)
+        footer_html = gr.HTML("")
         results_state = gr.State(value=[])
         cancel_state = gr.State(value=None)
 
         # ── events ──
+        app.load(_render_footer, None, [footer_html])
         url.change(_render_album_chips, [url], [album_chips_html])
         ref_input.change(_append_snapshot,
                          [ref_gallery, ref_input], [ref_gallery])
