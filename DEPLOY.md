@@ -183,16 +183,26 @@ sudo certbot --nginx -d photo.你的域名.com
 # 查看日志
 docker logs -f photofinder
 
-# 增量更新索引（摄影师追加了新照片时）
-docker exec photofinder python -m photofinder.cli \
-  --url "你的相册链接" --prepare --incremental
-
-# 重启服务
+# 重启服务（更新索引后用）
 docker restart photofinder
 
 # 停止服务
 docker stop photofinder && docker rm photofinder
 ```
+
+**摄影师追加了新照片时，不要在运行中的容器里 `docker exec ... --prepare`**——webui 已占用一套模型+索引的内存，exec 的 CLI 会再加载第二套，挤爆容器 3G 内存上限被 OOM 杀掉（exit 137）。正确做法：
+
+1. **推荐**：本地跑 `--prepare --incremental` 增量重建索引，只把索引文件传到服务器，然后 `docker restart photofinder`。完整流程见 OPS.md §2.1
+2. **应急**（必须在服务器上建时）：先停服务，用临时容器建，再启动：
+
+```bash
+docker stop photofinder
+docker run --rm -v ~/photofinder/models:/app/models -v ~/photofinder/cache:/app/cache \
+  photofinder python -m photofinder.cli --url "你的相册链接" --prepare --incremental
+docker start photofinder
+```
+
+> 踩坑详情见 OPS.md §3.2（OOM）；本地建索引还需注意 OPS.md §3.1（`PHOTOFINDER_FACE_BATCH=0`）。
 
 ## 9. 用户体验流程
 
@@ -206,11 +216,13 @@ docker stop photofinder && docker rm photofinder
 
 - **访问码不要公开发布**，只在活动群内分享
 - 用户上传的参考照片仅用于本次搜索的特征提取，**不会持久化存储**
-- 服务器上的缓存（缩略图、人脸索引）来自公开相册，活动结束后建议清理：
+- 服务器上的缓存（缩略图、人脸索引）来自公开相册，活动结束后建议清理**本活动相册**的数据（多相册共存时只删对应 `<orderId>` 子目录，别整个 `cache/` 全删，见 OPS.md §3.3）：
   ```bash
-  docker stop photofinder
-  rm -rf ~/photofinder/cache/*
+  # orderId 是相册链接里的那串数字；实际服务器目录见 OPS.md（~/SearCH）
+  rm -rf ~/photofinder/cache/<orderId>/
+  docker restart photofinder
   ```
+  整个服务彻底下线时才全清：`rm -rf ~/photofinder/cache/*`
 - 建议在活动群说明：本工具仅供查找本人照片，请勿用于搜索他人
 
 ## 费用总结
